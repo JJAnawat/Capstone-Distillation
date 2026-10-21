@@ -23,6 +23,11 @@ for log in logs/vllm_*.log; do
     | tail -n 300 > "$DEST/$(basename "$log" .log)_highlights.txt"
 done
 
+# The end of each run log (logs/smoke.log, logs/pilot.log, ...): stage summaries and any errors.
+for log in logs/*.log; do
+  case "$(basename "$log")" in vllm_*) ;; *) tail -n 200 "$log" > "$DEST/$(basename "$log" .log)_tail.txt" ;; esac
+done
+
 # Complexity ratings per dataset and level (the ratings themselves stay on the VM).
 PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
 "$PY" - "$DEST/complexity_counts.json" <<'EOF'

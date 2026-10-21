@@ -4,5 +4,6 @@ data/
 __pycache__/
 *.egg-info/
 .pytest_cache/
-logs/
+logs/*
+!logs/.gitkeep
 .vm_env
