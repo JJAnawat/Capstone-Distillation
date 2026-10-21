@@ -14,6 +14,8 @@ echo "== disk (need ~60 GB: two models ~40 GB in the HF cache, venv with vLLM ~1
 HF=${HF_HOME:-$HOME/.cache/huggingface}
 echo "all filesystems (a bigger one can hold the models: export HF_HOME=/that/disk/hf):"
 df -h -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null
+echo "RAM-backed /dev/shm (can hold the models when no disk has room; emptied on reboot):"
+df -h /dev/shm 2>/dev/null | tail -1
 echo "block devices (a disk without a mount point is not usable yet):"
 lsblk -o NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null
 echo "HF cache: $HF"
