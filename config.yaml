@@ -11,6 +11,8 @@ teacher:
     concurrency: 256                     # in-flight requests; vLLM batches them
     timeout_s: 7200                      # a long sample under full batching can take many minutes
     startup_timeout_s: 1800              # the first start downloads ~18 GB of weights
+    # The VM has no CUDA compiler, so FlashInfer cannot build its sampling kernel: use vLLM's PyTorch sampler.
+    serve_env: {VLLM_USE_FLASHINFER_SAMPLER: 0}
     serve_args:
       - --reasoning-parser=qwen3
       - --language-model-only            # text only: skip the vision encoder
@@ -35,6 +37,7 @@ judge:
     timeout_s: 1800
     startup_timeout_s: 1800
     logprobs: true                       # expected score from the score token's distribution
+    serve_env: {VLLM_USE_FLASHINFER_SAMPLER: 0}
     serve_args:
       - --reasoning-parser=gemma4
       - --max-model-len=32768

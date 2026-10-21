@@ -102,10 +102,12 @@ def test_wait_ready_polls_until_the_model_is_served():
 
 
 def test_serve_command_appends_extra_vllm_args(monkeypatch):
-    monkeypatch.setenv("VLLM_EXTRA_ARGS", """--async-scheduling --speculative-config '{"method": "x", "n": 2}'""")
+    monkeypatch.setenv("DISTILL_SERVE_ARGS", """--async-scheduling --speculative-config '{"method": "x", "n": 2}'""")
     cmd = server.serve_command(CFG, "teacher")
     assert cmd[:3] == ["vllm", "serve", CFG["teacher"]["vllm"]["model"]] and "--reasoning-parser=qwen3" in cmd
     assert cmd[-3:] == ["--async-scheduling", "--speculative-config", '{"method": "x", "n": 2}']
+    # FlashInfer's sampler needs a CUDA compiler the VM lacks; both servers use vLLM's PyTorch sampler.
+    assert server.serve_env(CFG, "teacher") == server.serve_env(CFG, "judge") == {"VLLM_USE_FLASHINFER_SAMPLER": "0"}
 
 
 def test_wait_ready_fails_fast_when_the_server_dies(monkeypatch):

@@ -109,7 +109,7 @@ Settings come from environment variables: `LIMIT`, `N`, `VARIANTS`, `DATASETS`, 
 - `run_pilot.sh` sets `JUDGE_ALL_CLOSED=1`: rule-failing closed samples are judged too, so the report can show how well
   the judge separates right from wrong answers.
 - `scripts/bench.sh` reruns the pilot's no_robots generation under other server settings: concurrency 128,
-  `--async-scheduling`, and MTP speculative decoding (passed through `VLLM_EXTRA_ARGS`). It tabulates tok/s against
+  `--async-scheduling`, and MTP speculative decoding (passed through `DISTILL_SERVE_ARGS`). It tabulates tok/s against
   the pilot.
 - A laptop smoke test through OpenRouter is also available: `bash scripts/smoke_openrouter.sh` (Git Bash; costs cents).
 

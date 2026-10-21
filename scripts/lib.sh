@@ -7,10 +7,21 @@ mkdir -p logs
 
 SERVER=""
 start_server() {  # ROLE [EXTRA_VLLM_ARGS]: start `vllm serve` and wait until it serves its model (fails fast if it dies)
+  local busy
+  busy=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null)
+  if [ -n "$busy" ]; then  # e.g. a server left over from an earlier run
+    echo "The GPU is already in use. Stop these processes first (for an old server: pkill -f 'vllm serve'):" >&2
+    echo "$busy" >&2
+    return 1
+  fi
   echo "=== $(date -u +%FT%TZ) start $1 ${2:-}" >> "logs/vllm_$1.log"
-  VLLM_EXTRA_ARGS="${2:-}" distill serve "$1" >> "logs/vllm_$1.log" 2>&1 &
+  DISTILL_SERVE_ARGS="${2:-}" distill serve "$1" >> "logs/vllm_$1.log" 2>&1 &
   SERVER=$!
-  distill wait "$1" --pid "$SERVER"
+  if ! distill wait "$1" --pid "$SERVER"; then
+    echo "--- the $1 server did not start; last lines of logs/vllm_$1.log:" >&2
+    tail -n 40 "logs/vllm_$1.log" >&2
+    return 1
+  fi
 }
 stop_server() {  # shut the server down and wait until the GPU memory is free for the next model
   if [ -z "$SERVER" ]; then return; fi
@@ -24,4 +35,4 @@ stop_server() {  # shut the server down and wait until the GPU memory is free fo
   echo "warning: GPU memory still in use after stopping the server" >&2
 }
 trap stop_server EXIT
-trap 'exit 130' INT TERM  # turn Ctrl-C into a normal exit so the EXIT trap stops the server
+trap 'exit 130' INT TERM HUP  # Ctrl-C, kill or a closed tmux window: exit normally so the EXIT trap stops the server

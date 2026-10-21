@@ -123,15 +123,22 @@ def run_pool(stage, work, todo, out, concurrency, key, **info):
 
 
 def serve_command(cfg, role):
-    """`vllm serve` for `role` with the flags from config, plus any in $VLLM_EXTRA_ARGS (used by scripts/bench.sh)."""
+    """`vllm serve` for `role` with the flags from config, plus any in $DISTILL_SERVE_ARGS (used by scripts/bench.sh)."""
     ep = endpoint(cfg, role, "vllm")
-    return ["vllm", "serve", ep["model"], *map(str, ep["serve_args"]), *shlex.split(os.environ.get("VLLM_EXTRA_ARGS", ""))]
+    return ["vllm", "serve", ep["model"], *map(str, ep["serve_args"]),
+            *shlex.split(os.environ.get("DISTILL_SERVE_ARGS", ""))]
+
+
+def serve_env(cfg, role):
+    """Environment variables the server needs, from config (`serve_env`); they override the caller's environment."""
+    return {k: str(v) for k, v in (endpoint(cfg, role, "vllm").get("serve_env") or {}).items()}
 
 
 def serve(cfg, role):
     """Replace this process with `vllm serve` for `role` (GPU VM only)."""
-    cmd = serve_command(cfg, role)
-    print("[serve]", " ".join(cmd), flush=True)
+    cmd, env = serve_command(cfg, role), serve_env(cfg, role)
+    print("[serve]", " ".join(f"{k}={v}" for k, v in env.items()), " ".join(cmd), flush=True)
+    os.environ.update(env)
     os.execvp(cmd[0], cmd)
 
 
