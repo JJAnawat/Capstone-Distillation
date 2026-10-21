@@ -63,7 +63,7 @@ def test_parse_missing_usage():
 def test_parse_cot_rationale():
     p = generate.parse_response(completion("<reasoning>1. A.\n2. B.</reasoning>\n\nThe answer is B."),
                                 thinking=False, cot=True)
-    assert p["rationale"] == "1. A.\n2. B." and p["answer"] == "The answer is B."
+    assert p["rationale"] == "1. A.\n\n2. B." and p["answer"] == "The answer is B."  # steps separated by a blank line
 
 
 def test_parse_cot_without_tags_has_empty_rationale():
@@ -143,6 +143,11 @@ def test_filter_accepts_clean_row():
 ])
 def test_filter_rejects(overrides, reason):
     assert reason in report.rejection_reasons(row(**overrides), FCFG, max_reasoning_tokens=4000)
+
+
+def test_language_check_skipped_for_language_identification():
+    r = row(input="Верхнерейнская низменность Which language is this?", answer="This text is written in Russian.")
+    assert "language_mismatch" not in report.rejection_reasons(r, FCFG)
 
 
 def test_language_check_skipped_for_translation_prompts():

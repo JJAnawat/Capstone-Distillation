@@ -1,5 +1,5 @@
 """Variant B of the CoT pilot: rewrite each thinking-on trace into a short numbered rationale reaching the same answer."""
-from distill import server
+from distill import server, verify
 from distill.generate import load_template, parse_response, read_done_keys
 from distill.report import read_jsonl
 
@@ -32,7 +32,8 @@ def run(cfg, in_path, out, concurrency=None, backend=None, client=None):
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user.format(**kw)}]
         body = server.build_body(ep, messages, sampling, False, r.get("seed", 0), cc["max_tokens"])
         p = parse_response(server.call_api(client, body, cfg["generate"]["max_retries"]), thinking=False)
-        return {**r, "rationale": p["answer"] if p["finish_reason"] == "stop" else "", **meta}, p["answer_tokens"]
+        rationale = verify.format_steps(p["answer"]) if p["finish_reason"] == "stop" else ""
+        return {**r, "rationale": rationale, **meta}, p["answer_tokens"]
 
     return server.run_pool("compress", work, todo, out, concurrency,
                            lambda r: {"id": r["id"], "sample_idx": r.get("sample_idx", 0)}, input=str(in_path),

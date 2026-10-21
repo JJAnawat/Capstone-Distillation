@@ -6,7 +6,7 @@ from fractions import Fraction
 FINAL = re.compile(r"final answer\s*[:：]\s*(.+)", re.I)
 NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?(?:/\d+)?")
 LATEX_WRAPPER = re.compile(r"\\(?:boxed|text|textbf|mathrm)\{([^{}]*)\}")
-STEP = re.compile(r"^\s*(?:step\s*)?\d+\s*[.):]", re.I | re.M)
+STEP = re.compile(r"^\s*(?:step\s*)?\d+\s*[.):]", re.I)
 
 
 def extract_boxed(text):
@@ -61,7 +61,25 @@ def is_correct(answer, gold):
     return False
 
 
+def split_steps(rationale):
+    """Steps of a rationale: numbered items (a line without a number continues the item before it), or its non-empty
+    lines when the steps are not numbered."""
+    lines = [line.strip() for line in (rationale or "").splitlines() if line.strip()]
+    if not any(STEP.match(line) for line in lines):
+        return lines
+    steps = []
+    for line in lines:
+        if STEP.match(line) or not steps:
+            steps.append(line)
+        else:
+            steps[-1] += " " + line
+    return steps
+
+
+def format_steps(rationale):
+    """The stored rationale format: one step per paragraph, steps separated by a blank line."""
+    return "\n\n".join(split_steps(rationale))
+
+
 def count_steps(rationale):
-    """Numbered steps in a rationale, or its non-empty lines when the steps are not numbered."""
-    rationale = rationale or ""
-    return len(STEP.findall(rationale)) or sum(1 for line in rationale.splitlines() if line.strip())
+    return len(split_steps(rationale))

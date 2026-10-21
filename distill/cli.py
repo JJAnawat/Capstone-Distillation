@@ -77,6 +77,7 @@ def main(argv=None):
     j.add_argument("--all", action="store_true",
                    help="judge every sample, including rule-failing closed ones (to measure judge vs rules)")
     j.add_argument("--thinking", choices=["on", "off"], help="override judge.thinking from config")
+    j.add_argument("--prompt-version", help="override judge.prompt_version (rubric) from config")
     j.add_argument("--concurrency", type=int)
     j.add_argument("--backend", choices=BACKENDS)
 
@@ -117,10 +118,11 @@ def main(argv=None):
             ap.error("judge needs FILES and/or --validate N")
         thinking = None if args.thinking is None else args.thinking == "on"
         if args.validate:
-            judge.validate(cfg, args.validate, concurrency=args.concurrency, backend=args.backend, thinking=thinking)
+            judge.validate(cfg, args.validate, concurrency=args.concurrency, backend=args.backend, thinking=thinking,
+                           prompt_version=args.prompt_version)
         if args.files:
             judge.run(cfg, args.files, concurrency=args.concurrency, backend=args.backend, all_samples=args.all,
-                      thinking=thinking)
+                      thinking=thinking, prompt_version=args.prompt_version)
     elif args.cmd == "select":
         selection.run(cfg, args.file, args.out, order=args.order, min_score=args.min_score)
 

@@ -53,7 +53,7 @@ judge:
     # Not every provider enforces the JSON schema; the prompt asks for JSON and the parser finds it in plain text.
     provider: {require_parameters: false}
     price_per_mtok: {prompt: 0.12, completion: 0.35}
-  prompt_version: v1
+  prompt_version: v2                     # v2: stricter anchors (v1 gave almost every Qwen sample a 9)
   thinking: false
   temperature: 0.0                       # deterministic scores (Gemma's card settings are for generation)
   max_tokens: 512
@@ -72,7 +72,7 @@ generate:
   max_tokens: 32768      # thinking on (model card); thinking-off cot mode uses cot.max_tokens
   max_retries: 6
   seed: 0                # base seed; each sample's seed is derived from (seed, id, sample index)
-  prompt_versions: {open: v2, cot: v1, hint: v1}
+  prompt_versions: {open: v2, cot: v2, hint: v1}   # cot v2: tags always, steps separated by a blank line
 
 # Short chain of thought: the student has a 2,048-token context.
 cot:
@@ -80,7 +80,7 @@ cot:
   max_words: 150         # filter: longer rationales are rejected (the prompts ask for under 100 words)
 
 compress:
-  prompt_version: v1
+  prompt_version: v2
   max_tokens: 512
 
 rate:
@@ -132,6 +132,7 @@ filter:
   # Prompts matching any of these regexes may legitimately be answered in another language.
   language_skip_patterns:
     - translat
+    - '\b(which|what) language\b'      # language identification: the prompt quotes a foreign text
     - '\b(in|into) (english|french|spanish|german|italian|portuguese|chinese|japanese|korean|thai|russian|arabic|hindi|dutch)\b'
   leakage_phrases:
     - reference answer

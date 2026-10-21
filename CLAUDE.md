@@ -36,6 +36,9 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 - **Two ways to make the CoT short, compared in the pilot.** Pick one after the pilot.
   - A "prompted": thinking off, at most 5 steps inside `<reasoning>` tags.
   - B "compressed": thinking on, then `compress` rewrites the trace into at most 5 steps.
+- **Rationale format (user's requirement):** numbered steps, one per paragraph, separated by a blank line (`\n\n`).
+  The prompts ask for it (`cot_v2`, `compress_v2`), and `verify.format_steps` enforces it on every stored rationale.
+  `count_steps` uses the same split.
 - **N = 8 samples per prompt.** The user wanted 6–10.
 - **Closed-ended means a known short answer.**
   - Source: UltraFeedback `correct_answers` of 4 words or fewer, from flan_v2_niv2, flan_v2_p3 and flan_v2_flan2021.
@@ -106,6 +109,19 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
     OpenAI-compatible server.
   - It has not yet run against real models.
 - The user got VM access on 2026-10-21: exclusive, a few hours per day. The OpenRouter smoke test is skipped.
+  - **Claude now drives the VM** over SSH from the laptop (`ssh -o BatchMode=yes aicookie@193.122.152.236 '…'`; key
+    login works), and the user approves each command.
+  - Code reaches the VM through commit, push, then `git pull` on the VM.
+  - Runs go in detached tmux sessions: `tmux new -d -s <name> "… | tee -a logs/<name>.log"`.
+  - VM facts: vLLM 0.32.0, torch 2.13. There is no nvcc, so `VLLM_USE_FLASHINFER_SAMPLER=0` via `serve_env`. The
+    models are in `/dev/shm` (`.vm_env`).
+- Smoke run (`LIMIT=5`, 2026-10-21) passed end to end. Findings:
+  - judge v1 saturates at 9, so v2 was written;
+  - A sometimes skipped the tags, so `cot_v2` makes them mandatory;
+  - language-ID prompts were false language mismatches, so they now skip the check;
+  - rule "wrong" answers were partly gold or rule misses ("Dale's farms" against "Dale");
+  - B's answers are terse after thinking.
+  - KV cache: 453k tokens.
 - Next:
   1. The user pushes to a private GitHub repo.
   2. VM session 1: setup and smoke.

@@ -1,2 +1,4 @@
 # Shell scripts run on the Linux GPU VM: keep LF line endings even when checked out on Windows.
 *.sh text eol=lf
+# Prompt templates are split on their "### user" line and hashed: keep them LF everywhere.
+prompts/*.txt text eol=lf

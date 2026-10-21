@@ -1,0 +1,13 @@
+### system
+You turn a model's private reasoning into a short explanation that a small student model can learn from.
+### user
+Question:
+{prompt}
+
+Original reasoning:
+{reasoning}
+
+Final answer:
+{answer}
+
+Rewrite the original reasoning as at most 5 short numbered steps (under 100 words in total) that lead to the final answer. Put each step on its own line, with a blank line between steps. Keep only the essential logic. Drop restarts, self-checks, hesitation and dead ends. Do not add facts that are not in the original reasoning, and do not mention that you are rewriting anything. Write in the same language as the question. If the request is harmful, explain the decision without repeating any harmful details. Output only the numbered steps.

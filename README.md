@@ -212,7 +212,8 @@ reasons) and `<out stem>.rejections.json` (counts).
 - **Validation:** `judge --validate N` judges both responses of HelpSteer2 *validation* prompts whose two responses
   got different human helpfulness ratings. It appends a row to `reports/judge_validation.md`: agreement, ties, thinking
   on/off, completion tokens per call, minutes. `--thinking on|off` overrides `judge.thinking` (thinking uses
-  `judge.max_tokens_thinking`).
+  `judge.max_tokens_thinking`). `--prompt-version` picks the rubric. v2, the default, is stricter: v1 gave almost
+  every Qwen sample a 9 in the smoke run. The pilot validates both (`VALIDATE_PROMPTS="v1 v2"`).
 - **Report sections that guide the full run:**
   - **Best-of-k** per variant: what the first k samples of each prompt would give (mean best score, yield, pass@k), to
     choose N.
@@ -239,7 +240,7 @@ reasons) and `<out stem>.rejections.json` (counts).
 | `input` | the user prompt sent to the teacher (never contains the hint) |
 | `closed`, `gold` | closed-ended flag; gold answers (closed prompts only) |
 | `reasoning` | raw teacher thinking (empty when thinking is off); analysis only |
-| `rationale` | short numbered reasoning, the training target together with `answer` |
+| `rationale` | short numbered reasoning, one step per paragraph with steps separated by a blank line (`\n\n`; `verify.format_steps`), the training target together with `answer` |
 | `answer` | teacher final answer, with think and reasoning tags removed |
 | `finish_reason` | `stop`, `length`, … |
 | `prompt_tokens`, `reasoning_tokens`, `answer_tokens` | `answer_tokens = completion_tokens − reasoning_tokens` |

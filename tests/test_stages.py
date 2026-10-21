@@ -43,7 +43,7 @@ def test_compress_rewrites_finished_samples_only(tmp_path):
     assert len(bodies) == 1 and "Long trace." in bodies[0]["messages"][1]["content"]
     assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
     out = {r["id"]: r for r in report.read_jsonl(tmp_path / "b.jsonl")}
-    assert out["p0"]["rationale"] == "1. Short.\n2. Steps." and out["p0"]["cot_method"] == "compressed"
+    assert out["p0"]["rationale"] == "1. Short.\n\n2. Steps." and out["p0"]["cot_method"] == "compressed"
     assert out["p1"]["rationale"] == "" and out["p1"]["reasoning"] == "Long trace."
     bodies.clear()
     compress.run(CFG, src, tmp_path / "b.jsonl", client=mock_client(lambda p, b: completion("x"), bodies))
@@ -77,6 +77,19 @@ def test_count_steps():
     assert verify.count_steps("1. Read.\n2) Think.\nStep 3: Answer.") == 3
     assert verify.count_steps("First this.\nThen that.") == 2
     assert verify.count_steps("") == 0
+
+
+@pytest.mark.parametrize("raw, formatted", [
+    ("1. Read the task.\n2. Check the rule,\nwhich wraps here.\n3. Answer.",
+     "1. Read the task.\n\n2. Check the rule, which wraps here.\n\n3. Answer."),
+    ("1. A.\n\n\n2. B.", "1. A.\n\n2. B."),
+    ("First this.\nThen that.", "First this.\n\nThen that."),
+    ("One paragraph only.", "One paragraph only."),
+    ("", ""),
+])
+def test_format_steps_separates_steps_with_a_blank_line(raw, formatted):
+    assert verify.format_steps(raw) == formatted
+    assert verify.count_steps(formatted) == verify.count_steps(raw)
 
 
 # ---------------------------------------------------------------- judge
@@ -125,6 +138,8 @@ def test_judge_candidates_all_includes_rule_failing_samples():
 
 def test_judge_config_thinking_override():
     assert judge.judge_config(CFG)["max_tokens"] == CFG["judge"]["max_tokens"]
+    assert judge.judge_config(CFG, prompt_version="v1")["prompt_version"] == "v1"
+    assert generate.load_template("judge", "v1")[2] != generate.load_template("judge", CFG["judge"]["prompt_version"])[2]
     on = judge.judge_config(CFG, thinking=True)
     assert on["thinking"] and on["max_tokens"] == CFG["judge"]["max_tokens_thinking"]
     body = judge.judge_body(server.endpoint(CFG, "judge", "vllm"), on, [{"role": "user", "content": "x"}])

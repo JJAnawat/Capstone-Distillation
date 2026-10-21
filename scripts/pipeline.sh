@@ -9,6 +9,7 @@
 #   DATASETS  datasets to run                                     ["no_robots helpsteer2 ultrafeedback"]
 #   VALIDATE  HelpSteer2 pairs for judge validation (once per OUT), 0 = skip              [300]
 #   JUDGE_ALL_CLOSED  1 = judge rule-failing closed samples too (judge-vs-rules check)     [0]
+#   VALIDATE_PROMPTS  judge rubric versions to validate, e.g. "v1 v2"            [config version]
 #   OUT, REPORT  output directory and report path                       [data/pilot2, reports/pilot2.md]
 # Stop with Ctrl-C: the server is shut down and the next run resumes where this one stopped.
 set -euo pipefail
@@ -68,9 +69,12 @@ done
 
 echo "== judge phase ($BACKEND)"
 start judge
-if [ "$VALIDATE" -gt 0 ] && [ ! -e "$OUT/.judge_validated" ]; then
-  distill judge --validate "$VALIDATE" "${BK[@]}" && touch "$OUT/.judge_validated"
-fi
+for pv in ${VALIDATE_PROMPTS:-config}; do  # each rubric version is validated once per OUT
+  if [ "$VALIDATE" -gt 0 ] && [ ! -e "$OUT/.judge_validated_$pv" ]; then
+    PV=(); if [ "$pv" != config ]; then PV=(--prompt-version "$pv"); fi
+    distill judge --validate "$VALIDATE" "${PV[@]}" "${BK[@]}" && touch "$OUT/.judge_validated_$pv"
+  fi
+done
 if [ ${#KEPT_OPEN[@]} -gt 0 ]; then distill judge "${KEPT_OPEN[@]}" "${BK[@]}"; fi
 if [ ${#KEPT_CLOSED[@]} -gt 0 ]; then
   ALL=(); if [ "$JUDGE_ALL_CLOSED" = 1 ]; then ALL=(--all); fi

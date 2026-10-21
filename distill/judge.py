@@ -20,11 +20,14 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["critiqu
 DIGITS = {str(d) for d in range(1, 10)}
 
 
-def judge_config(cfg, thinking=None):
-    """The judge settings, with thinking switched on or off when asked; thinking needs a larger token budget."""
+def judge_config(cfg, thinking=None, prompt_version=None):
+    """The judge settings, with thinking or the rubric version overridden when asked; thinking needs a larger token
+    budget."""
     jc = dict(cfg["judge"])
     if thinking is not None:
         jc["thinking"] = thinking
+    if prompt_version:
+        jc["prompt_version"] = prompt_version
     if jc["thinking"]:
         jc["max_tokens"] = jc["max_tokens_thinking"]
     return jc
@@ -98,8 +101,9 @@ def parse_grade(j):
     return score, expected_score(choice.get("logprobs"), score), str(grade.get("critique", ""))
 
 
-def run(cfg, files, concurrency=None, backend=None, client=None, all_samples=False, thinking=None):
-    jc = judge_config(cfg, thinking)
+def run(cfg, files, concurrency=None, backend=None, client=None, all_samples=False, thinking=None,
+        prompt_version=None):
+    jc = judge_config(cfg, thinking, prompt_version)
     ep = server.endpoint(cfg, "judge", backend)
     system, user, prompt_hash = load_template("judge", jc["prompt_version"])
     concurrency = concurrency or ep["concurrency"]
@@ -139,13 +143,13 @@ def agreement(results):
 
 
 def validate(cfg, n_pairs, out="reports/judge_validation.md", concurrency=None, backend=None, client=None, seed=0,
-             thinking=None):
+             thinking=None, prompt_version=None):
     """Judge both responses of HelpSteer2 validation prompts whose human helpfulness ratings differ (no reference,
     no rationale) and append the agreement with the humans, and what it cost, to `out`. The validation split is never
     generated from."""
     from datasets import load_dataset
 
-    jc = judge_config(cfg, thinking)
+    jc = judge_config(cfg, thinking, prompt_version)
     ep = server.endpoint(cfg, "judge", backend)
     system, user, prompt_hash = load_template("judge", jc["prompt_version"])
     by_prompt = defaultdict(list)

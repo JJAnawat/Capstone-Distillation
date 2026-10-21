@@ -6,11 +6,11 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from distill import data, server
+from distill import data, server, verify
 
 
 def load_template(name, version):
-    text = Path(f"prompts/{name}_{version}.txt").read_text(encoding="utf-8")
+    text = Path(f"prompts/{name}_{version}.txt").read_text(encoding="utf-8").replace("\r\n", "\n")  # same hash on Windows
     system, user = text.split("### user\n", 1)
     system = system.removeprefix("### system\n").strip()
     return system, user.strip(), hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -51,7 +51,7 @@ def parse_response(j, thinking=True, cot=False):
         reasoning, content, think_unclosed = reasoning or tail, head, True
     rationale = ""
     if cot and (t := re.search(r"<reasoning>(.*?)</reasoning>", content, re.S)):
-        rationale, content = t.group(1).strip(), content[:t.start()] + content[t.end():]
+        rationale, content = verify.format_steps(t.group(1)), content[:t.start()] + content[t.end():]
     usage = j.get("usage") or {}
     completion = usage.get("completion_tokens", 0)
     reasoning_tokens = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
