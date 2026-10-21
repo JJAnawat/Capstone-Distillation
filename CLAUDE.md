@@ -88,6 +88,10 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   strips it.
 - The Windows console is cp1252. Set `PYTHONIOENCODING=utf-8` for ad-hoc scripts that print Thai.
 - `.sh` files must keep LF line endings (`.gitattributes`), or bash on the VM fails with `$'\r'`.
+- **VM disk:** the root disk (495 GB) has only ~3 GB free; the space belongs to others, not to this project. Models,
+  datasets and vLLM caches go on the shared NFS `/lambda/nfs/Fusion-SFT/aicookie/` via `HF_HOME` and `VLLM_CACHE_ROOT`
+  in `.vm_env` (untracked, sourced by `scripts/lib.sh` and `vm_check.sh`). Pipeline outputs are small and stay in
+  the repo.
 
 ## Licensing
 No Robots is CC BY-NC 4.0: everything derived from it is non-commercial, so keep `source_dataset` on every row.

@@ -90,6 +90,14 @@ tmux new -s full 'VARIANTS=A bash scripts/run_full.sh 2>&1 | tee -a logs/full.lo
 Monitor with `tail -f logs/pilot.log logs/vllm_teacher.log` (tmux: `Ctrl-b d` detaches, `tmux attach -t pilot`
 returns).
 
+**Machine settings** go in `.vm_env` in the repo root. It is untracked, and the scripts source it, because
+`~/.bashrc` is often skipped by tmux and non-interactive shells. Source it yourself for commands typed by hand. On the
+current VM the root disk is nearly full, so the model, dataset and vLLM caches live on the shared filesystem:
+```bash
+export HF_HOME=/lambda/nfs/Fusion-SFT/aicookie/hf
+export VLLM_CACHE_ROOT=/lambda/nfs/Fusion-SFT/aicookie/vllm-cache
+```
+
 `scripts/pipeline.sh` does the work:
 1. Starts the teacher server; rates, generates and compresses; stops it.
 2. Filters.

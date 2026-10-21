@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Preflight for the GPU VM: hardware, disk, tools, network, and whether the installed vLLM has what config.yaml uses.
 # Run from the repo root before and after installing: bash scripts/vm_check.sh | tee reports/vm_check.txt
+if [ -f .vm_env ]; then source .vm_env; fi  # machine-specific exports such as HF_HOME
 echo "== $(date -u +%FT%TZ) on $(hostname)"
 
 echo "== GPU"
@@ -9,10 +10,19 @@ nvidia-smi 2>/dev/null | grep -o "CUDA Version: [0-9.]*"
 echo "processes on the GPU (should be none):"
 nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>&1
 
-echo "== disk (need ~60 GB: two models ~38 GB, venv with vLLM ~10 GB, datasets and outputs)"
+echo "== disk (need ~60 GB: two models ~40 GB in the HF cache, venv with vLLM ~10 GB, datasets and outputs)"
 HF=${HF_HOME:-$HOME/.cache/huggingface}
-df -h . "$HF" 2>/dev/null || df -h .
+echo "all filesystems (a bigger one can hold the models: export HF_HOME=/that/disk/hf):"
+df -h -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null
+echo "block devices (a disk without a mount point is not usable yet):"
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINT 2>/dev/null
 echo "HF cache: $HF"
+du -sh "$HF" "$HOME/.cache/uv" .venv 2>/dev/null
+mkdir -p "$HF" 2>/dev/null
+FREE_GB=$(df -BG --output=avail "$HF" 2>/dev/null | tail -1 | tr -dc 0-9)
+if [ -n "$FREE_GB" ] && [ "$FREE_GB" -lt 45 ]; then
+  echo "WARNING: only ${FREE_GB} GB free where the models go ($HF); Qwen (19 GB) + Gemma (20 GB) need ~45 GB with headroom"
+fi
 
 echo "== memory and CPUs"
 free -g 2>/dev/null | head -2

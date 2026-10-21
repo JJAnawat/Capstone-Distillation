@@ -1,5 +1,7 @@
-# Shared by pipeline.sh and bench.sh (source it from the repo root): activate the venv and start/stop a local vLLM
-# server. Ctrl-C or any exit stops the server, so the next run can start cleanly and resume.
+# Shared by pipeline.sh and bench.sh (source it from the repo root): load machine settings, activate the venv and
+# start/stop a local vLLM server. Ctrl-C or any exit stops the server, so the next run can start cleanly and resume.
+# .vm_env (untracked) holds machine-specific exports such as HF_HOME; ~/.bashrc is often skipped by tmux and scripts.
+if [ -f .vm_env ]; then source .vm_env; fi
 if [ -f .venv/bin/activate ]; then source .venv/bin/activate; else source .venv/Scripts/activate; fi
 mkdir -p logs
 
