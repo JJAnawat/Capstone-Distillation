@@ -1,0 +1,144 @@
+# Pipeline configuration. CLI flags override the values here.
+
+# Where teacher and judge requests go: vllm (a local `distill serve` on the GPU VM) or openrouter (laptop smoke tests).
+backend: vllm
+openrouter_api_base: https://openrouter.ai/api/v1
+
+teacher:
+  vllm:
+    model: Qwen/Qwen3.5-9B
+    api_base: http://localhost:8000/v1   # keep the port in sync with --port below
+    concurrency: 256                     # in-flight requests; vLLM batches them
+    timeout_s: 7200                      # a long sample under full batching can take many minutes
+    startup_timeout_s: 1800              # the first start downloads ~18 GB of weights
+    serve_args:
+      - --reasoning-parser=qwen3
+      - --language-model-only            # text only: skip the vision encoder
+      - --max-model-len=65536
+      - --gpu-memory-utilization=0.92
+      - --max-num-seqs=256
+      - --port=8000
+  openrouter:
+    model: qwen/qwen3.5-9b
+    concurrency: 8
+    timeout_s: 900
+    # Skip the fp4 provider; only route to providers that honour every sampling param we send (incl. seed).
+    provider: {quantizations: [bf16, fp8], require_parameters: true}
+    # Fallback USD price per 1M tokens, used only when the response has no usage.cost.
+    price_per_mtok: {prompt: 0.10, completion: 0.15}
+
+judge:
+  vllm:
+    model: google/gemma-4-31B-it-qat-w4a16-ct   # official QAT int4 checkpoint, ~19.8 GB; cannot share the GPU with the teacher
+    api_base: http://localhost:8000/v1
+    concurrency: 128
+    timeout_s: 1800
+    startup_timeout_s: 1800
+    logprobs: true                       # expected score from the score token's distribution
+    serve_args:
+      - --reasoning-parser=gemma4
+      - --max-model-len=32768
+      - --gpu-memory-utilization=0.92
+      - --max-num-seqs=128
+      - '--limit-mm-per-prompt={"image": 0, "video": 0}'
+      - --port=8000
+  openrouter:
+    model: google/gemma-4-31b-it
+    concurrency: 8
+    timeout_s: 900
+    logprobs: false                      # not every provider returns them; scores fall back to the integer
+    # Not every provider enforces the JSON schema; the prompt asks for JSON and the parser finds it in plain text.
+    provider: {require_parameters: false}
+    price_per_mtok: {prompt: 0.12, completion: 0.35}
+  prompt_version: v1
+  thinking: false
+  temperature: 0.0                       # deterministic scores (Gemma's card settings are for generation)
+  max_tokens: 512
+  max_tokens_thinking: 4096              # used instead when judging with thinking on (`judge --thinking on`)
+  max_retries: 6
+  use_reference: true                    # show the gold or a high-rated dataset answer as a (possibly imperfect) reference
+
+# Qwen3.5-9B model card, "general tasks" settings. Every field is sent: a local vLLM server fills unsent fields
+# from the model's generation_config.json.
+sampling:
+  thinking_on:  {temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0}
+  thinking_off: {temperature: 0.7, top_p: 0.8,  top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0}
+
+generate:
+  n: 8                   # samples per prompt
+  max_tokens: 32768      # thinking on (model card); thinking-off cot mode uses cot.max_tokens
+  max_retries: 6
+  seed: 0                # base seed; each sample's seed is derived from (seed, id, sample index)
+  prompt_versions: {open: v2, cot: v1, hint: v1}
+
+# Short chain of thought: the student has a 2,048-token context.
+cot:
+  max_tokens: 4096       # thinking-off generation cap; longer outputs cannot fit the student anyway
+  max_words: 150         # filter: longer rationales are rejected (the prompts ask for under 100 words)
+
+compress:
+  prompt_version: v1
+  max_tokens: 512
+
+rate:
+  prompt_version: v1
+  temperature: 0.0
+  max_tokens: 1024
+
+student:
+  tokenizer: wongwian-org/wongwian-micro-instruct
+  max_total_tokens: 2048   # input + rationale + answer must fit the student's context
+
+verify:
+  max_gold_words: 4        # UltraFeedback gold answers this short are checked by rule
+  sources: [flan_v2_niv2, flan_v2_p3, flan_v2_flan2021]
+
+select:
+  min_score: 7             # judge scale 1-9
+  k_open: 1                # samples kept per open prompt
+  k_closed: 3              # distinct correct samples kept per closed prompt
+  max_similarity: 0.7      # word-trigram Jaccard above which two rationales count as the same
+  order: curriculum        # curriculum (complexity 1 -> 5, shuffled within a level) | random
+  seed: 0
+
+# Order matters: a prompt seen in an earlier dataset is dropped from later ones.
+# hint.min_ratings: the best reference response must meet every threshold to be used in hint mode.
+datasets:
+  no_robots:
+    hf_id: HuggingFaceH4/no_robots
+    split: train
+    input_field: prompt
+    stratify_by: category
+    hint: {min_ratings: {}}            # human-written answers: all single-turn rows qualify
+  helpsteer2:
+    hf_id: nvidia/HelpSteer2
+    split: train
+    input_field: prompt
+    stratify_by: null
+    hint: {min_ratings: {helpfulness: 4, correctness: 4, coherence: 4}}
+  ultrafeedback:
+    hf_id: openbmb/UltraFeedback
+    split: train
+    input_field: instruction
+    stratify_by: source
+    hint: {min_ratings: {fine_grained_score: 5.0, overall_score: 8}}
+
+filter:
+  repetition: {n: 8, max_ratio: 0.3, min_ngrams: 50}
+  language: {min_chars: 40}
+  # Prompts matching any of these regexes may legitimately be answered in another language.
+  language_skip_patterns:
+    - translat
+    - '\b(in|into) (english|french|spanish|german|italian|portuguese|chinese|japanese|korean|thai|russian|arabic|hindi|dutch)\b'
+  leakage_phrases:
+    - reference answer
+    - the reference
+    - private note
+    - private_note
+    - the note
+    - provided answer
+    - given answer
+    - expected answer
+    - answer provided
+    - answer given
+    - the hint

@@ -1,0 +1,4 @@
+### system
+You are a helpful assistant. Answer in the same language as the user's prompt. Keep your answer concise unless the user asks for detail. End your answer with a line 'Final answer: <answer>'.
+### user
+{prompt}

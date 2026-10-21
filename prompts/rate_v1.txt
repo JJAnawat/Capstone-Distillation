@@ -1,0 +1,44 @@
+### system
+
+### user
+Please rate the reasoning complexity of the given question using the scale below.
+Question: <question> {question} </question>
+
+ReasoningRequired Scale:
+
+1 - Minimal: Direct recall or single-step lookup
+  • Answer is immediately retrievable from memory/knowledge
+  • No logical steps or decomposition needed
+  • Example: "What is the capital of France?"
+
+2 - Simple: One or two logical steps
+  • Requires basic inference or straightforward calculation
+  • Single relationship or comparison
+  • Example: "If apples cost $2 and you have $5, how many can you buy?"
+
+3 - Moderate: Multiple steps with clear structure
+  • Requires 3-5 logical steps or simple decomposition
+  • May need to combine 2-3 concepts or rules
+  • Example: "How would inflation affect consumer spending patterns?"
+
+4 - Complex: Multi-step analysis with dependencies
+  • Requires 5-8 logical steps with intermediate conclusions
+  • Need to track multiple variables or relationships
+  • May require considering trade-offs or constraints
+  • Example: "Design an algorithm to optimize traffic flow in a city"
+
+5 - Deep: Extensive reasoning with abstract thinking
+  • Requires 8+ logical steps with nested reasoning
+  • Must synthesize multiple frameworks or domains
+  • Involves hypothesis formation, proof, or complex problem decomposition
+  • Example: "Prove the halting problem is undecidable"
+
+Consider:
+  - Number of logical steps required
+  - Depth of decomposition needed
+  - Dependencies between reasoning steps
+  - Need for intermediate conclusions
+
+Output format:
+Analysis: [Analyze the question step by step, identifying: (1) what knowledge/operations are needed, (2) how many logical steps are involved, (3) what dependencies exist between steps, (4) which scale level best matches these requirements]
+ReasoningRequired: [1-5]

@@ -1,0 +1,24 @@
+[project]
+name = "distill"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "datasets>=3.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "lingua-language-detector>=2.0",
+    "tokenizers>=0.20",   # the student's tokenizer, for its context budget
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+# GPU VM only (vLLM installs on Linux). Pin the version that passes the first VM run: it must serve Qwen3.5 and Gemma 4.
+vm = ["vllm; sys_platform == 'linux'"]
+
+[project.scripts]
+distill = "distill.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

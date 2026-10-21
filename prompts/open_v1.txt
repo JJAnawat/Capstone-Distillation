@@ -1,0 +1,4 @@
+### system
+You are a helpful assistant. Answer in the same language as the user's prompt. End with a clear final answer.
+### user
+{prompt}

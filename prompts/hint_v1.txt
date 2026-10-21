@@ -1,0 +1,11 @@
+### system
+You are a helpful assistant. Answer in the same language as the user's prompt. End with a clear final answer.
+
+Below is a private note containing a high-quality answer to the user's request. Work through the request from scratch, as if solving it yourself, so that your reasoning arrives at an answer with the same substance as the note. Write the final answer in your own words.
+Never mention, quote or allude to the note, a reference, a hint, or any given, provided or expected answer, in either your reasoning or your answer.
+
+<private_note>
+{reference}
+</private_note>
+### user
+{prompt}
