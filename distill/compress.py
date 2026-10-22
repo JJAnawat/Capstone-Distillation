@@ -1,6 +1,6 @@
 """Variant B of the CoT pilot: rewrite each thinking-on trace into a short numbered rationale reaching the same answer."""
-from distill import server, verify
-from distill.generate import load_template, parse_response, read_done_keys
+from distill import data, server, verify
+from distill.generate import load_template, parse_response, read_done_keys, step_limit
 from distill.report import read_jsonl
 
 
@@ -24,16 +24,19 @@ def run(cfg, in_path, out, concurrency=None, backend=None, client=None):
     concurrency = concurrency or ep["concurrency"]
     client = client or server.make_client(ep, concurrency)
     meta = {"cot_method": "compressed", "compress_model": ep["model"], "compress_prompt_hash": prompt_hash}
+    levels = {ds: data.load_complexity(ds) for ds in {r["source_dataset"] for r in todo}}
 
     def work(r):
+        max_steps, max_words = step_limit(cfg, levels[r["source_dataset"]].get(r["id"]))
         if not eligible(r):  # kept with an empty rationale, so the filter records why the sample was dropped
-            return {**r, "rationale": "", **meta}, 0
-        kw = {"prompt": r["input"], "reasoning": r["reasoning"], "answer": r["answer"]}
+            return {**r, "rationale": "", "max_steps": max_steps, **meta}, 0
+        kw = {"prompt": r["input"], "reasoning": r["reasoning"], "answer": r["answer"], "max_steps": max_steps,
+              "max_words": max_words}
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user.format(**kw)}]
         body = server.build_body(ep, messages, sampling, False, r.get("seed", 0), cc["max_tokens"])
         p = parse_response(server.call_api(client, body, cfg["generate"]["max_retries"]), thinking=False)
         rationale = verify.format_steps(p["answer"]) if p["finish_reason"] == "stop" else ""
-        return {**r, "rationale": rationale, **meta}, p["answer_tokens"]
+        return {**r, "rationale": rationale, "max_steps": max_steps, **meta}, p["answer_tokens"]
 
     return server.run_pool("compress", work, todo, out, concurrency,
                            lambda r: {"id": r["id"], "sample_idx": r.get("sample_idx", 0)}, input=str(in_path),

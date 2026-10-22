@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from distill import verify
-from distill.rate import load_complexity
+from distill.data import load_complexity
 
 STUDENT_TEMPLATE_TOKENS = 32  # system:/ผู้ใช้:/ผู้ช่วย: markers, BOS/EOS and a short system prompt
 
@@ -41,6 +41,12 @@ def judge_path(path):
 def _student_tokenizer(name):
     from tokenizers import Tokenizer
     return Tokenizer.from_pretrained(name)
+
+
+def student_counter(tokenizer):
+    """A function counting tokens of a text in the student's tokenizer."""
+    tok = _student_tokenizer(tokenizer)
+    return lambda text: len(tok.encode(text or "", add_special_tokens=False).ids)
 
 
 def student_tokens(r, tokenizer):

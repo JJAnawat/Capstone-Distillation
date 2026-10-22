@@ -8,7 +8,7 @@ mkdir -p logs
 SERVER=""
 start_server() {  # ROLE [EXTRA_VLLM_ARGS]: start `vllm serve` and wait until it serves its model (fails fast if it dies)
   local busy
-  busy=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null)
+  busy=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null || true)
   if [ -n "$busy" ]; then  # e.g. a server left over from an earlier run
     echo "The GPU is already in use. Stop these processes first (for an old server: pkill -f 'vllm serve'):" >&2
     echo "$busy" >&2

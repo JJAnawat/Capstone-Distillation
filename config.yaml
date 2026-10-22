@@ -68,19 +68,25 @@ sampling:
   thinking_off: {temperature: 0.7, top_p: 0.8,  top_k: 20, min_p: 0.0, presence_penalty: 1.5, repetition_penalty: 1.0}
 
 generate:
-  n: 8                   # samples per prompt
-  max_tokens: 32768      # thinking on (model card); thinking-off cot mode uses cot.max_tokens
+  n: 4                   # samples per prompt (--n overrides, for every level)
+  n_by_complexity: {1: 2}  # easy prompts: the pilot's best-of-2 already reached 95% usable at level 1
+  max_tokens: 32768      # the TEACHER's cap (room to think in variant B); the student's 2,048 budget is a filter
   max_retries: 6
   seed: 0                # base seed; each sample's seed is derived from (seed, id, sample index)
-  prompt_versions: {open: v2, cot: v2, hint: v1}   # cot v2: tags always, steps separated by a blank line
+  prompt_versions: {open: v2, cot: v3, hint: v1}   # cot v3: tags always, step limit by complexity, blank-line steps
 
 # Short chain of thought: the student has a 2,048-token context.
 cot:
   max_tokens: 4096       # thinking-off generation cap; longer outputs cannot fit the student anyway
-  max_words: 150         # filter: longer rationales are rejected (the prompts ask for under 100 words)
+  # Step limit by complexity rating (1-5): grows with DeReason's scale, raised after the pilot so easy prompts are
+  # not squeezed into one-sentence steps.
+  max_steps_by_complexity: {1: 4, 2: 5, 3: 6, 4: 8, 5: 10}
+  default_max_steps: 6   # prompts without a rating
+  words_per_step: 40     # the prompts ask for under max_steps x words_per_step words (about two sentences a step)
+  max_words: 600         # filter: only catches runaway rationales; the student's 2,048-token budget is the real limit
 
 compress:
-  prompt_version: v2
+  prompt_version: v3
   max_tokens: 512
 
 rate:

@@ -35,6 +35,18 @@ def test_rate_writes_ratings_and_resumes(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- compress
 
+def test_compress_step_limit_follows_complexity(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "load_complexity", lambda ds: {"p0": 4})
+    src = tmp_path / "raw.jsonl"
+    report.write_jsonl(src, [gen_row(0), gen_row(1)])  # p1 is unrated
+    bodies = []
+    compress.run(CFG, src, tmp_path / "b.jsonl", client=mock_client(lambda p, b: completion("1. Step."), bodies))
+    prompts = {b["messages"][1]["content"].split("\n")[1]: b["messages"][1]["content"] for b in bodies}
+    assert "at most 8 short numbered steps (under 320 words" in prompts["Question 0?"]
+    assert "at most 6 short numbered steps (under 240 words" in prompts["Question 1?"]
+    assert {r["id"]: r["max_steps"] for r in report.read_jsonl(tmp_path / "b.jsonl")} == {"p0": 8, "p1": 6}
+
+
 def test_compress_rewrites_finished_samples_only(tmp_path):
     src = tmp_path / "raw.jsonl"
     report.write_jsonl(src, [gen_row(0), gen_row(1, finish_reason="length", answer="")])
@@ -238,20 +250,37 @@ def test_select_keeps_best_open_and_distinct_correct_closed(tmp_path, monkeypatc
              for k, (r, a) in enumerate(closed_samples)]
     scores = {("p0", 0): (8, 8.0), ("p0", 1): (8, 8.0), ("p0", 2): (3, 3.0),
               ("p1", 0): (9, 8.9), ("p1", 1): (9, 8.8), ("p1", 2): (7, 7.1), ("p1", 3): (9, 9.0)}
-    stats = selection.run(CFG, write_judged(tmp_path, rows, scores), tmp_path / "final.jsonl")
+    words = lambda text: len(text.split())
+    stats = selection.run(CFG, write_judged(tmp_path, rows, scores), tmp_path / "final.jsonl", count=words)
     out = report.read_jsonl(tmp_path / "final.jsonl")
     keys = {(r["id"], r["sample_idx"]) for r in out}
     assert keys == {("p0", 0), ("p1", 0), ("p1", 2)}       # tie -> shorter; duplicate and wrong answers skipped
     assert [r["id"] for r in out] == ["p1", "p1", "p0"]    # curriculum: complexity 1 before 3
-    assert all("reasoning" not in r for r in out) and out[0]["selection"]["method"] == "rule+judge"
+    assert out[0]["selection"]["method"] == "rule+judge"
     assert out[-1]["complexity"] == 3 and out[-1]["n_steps"] == 1
     assert stats["kept: judge"] == 1 and stats["kept: rule+judge"] == 1
+
+
+def test_final_rows_have_student_tokens_and_a_teacher_group(tmp_path, monkeypatch):
+    monkeypatch.setattr(selection, "load_complexity", lambda ds: {"p0": 2})
+    row = gen_row(0, rationale="1. One.\n\n2. Two.", answer="The answer.", reasoning="Long raw thinking.",
+                  reasoning_tokens=610, answer_tokens=12, prompt_tokens=60, max_tokens=32768, temperature=1.0,
+                  cot_method="compressed", max_steps=3, compress_prompt_hash="abc")
+    src = write_judged(tmp_path, [row], {("p0", 0): (8, 8.2)})
+    selection.run(CFG, src, tmp_path / "f.jsonl", count=lambda text: len(text.split()))
+    final = report.read_jsonl(tmp_path / "f.jsonl")[0]
+    assert final["student_tokens"] == {"input": 2, "rationale": 4, "answer": 2, "total": 8 + report.STUDENT_TEMPLATE_TOKENS}
+    assert final["teacher"]["thinking_tokens"] == 610 and final["teacher"]["max_tokens"] == 32768
+    assert final["teacher"]["sampling"] == {"temperature": 1.0} and final["teacher"]["compress_prompt_hash"] == "abc"
+    assert final["complexity"] == 2 and final["max_steps"] == 3 and final["n_steps"] == 2
+    for gone in ("reasoning", "reasoning_tokens", "answer_tokens", "prompt_tokens", "finish_reason", "cost", "provider"):
+        assert gone not in final
 
 
 def test_select_drops_low_scores_and_unjudged_prompts(tmp_path, monkeypatch):
     monkeypatch.setattr(selection, "load_complexity", lambda ds: {})
     src = write_judged(tmp_path, [gen_row(0, rationale="1. x."), gen_row(1, rationale="1. y.")], {("p0", 0): (5, 5.2)})
-    stats = selection.run(CFG, src, tmp_path / "f.jsonl")
+    stats = selection.run(CFG, src, tmp_path / "f.jsonl", count=len)
     assert stats["rows_written"] == 0 and stats["dropped: no judged sample"] == 1
     assert stats[f"dropped: best score < {CFG['select']['min_score']}"] == 1
 

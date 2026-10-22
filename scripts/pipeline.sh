@@ -4,23 +4,25 @@
 # Settings come from the environment (the run_*.sh wrappers set them):
 #   BACKEND   vllm (start/stop local servers; GPU VM) | openrouter (laptop smoke test)   [vllm]
 #   LIMIT     prompts per dataset and subset, 0 = all                                      [100]
-#   N         samples per prompt                                                          [8]
+#   N         samples per prompt for every prompt; empty = by complexity (config)      [config]
 #   VARIANTS  "A B": A = thinking off + <reasoning> tags, B = thinking on + compress      ["A B"]
 #   DATASETS  datasets to run                                     ["no_robots helpsteer2 ultrafeedback"]
 #   VALIDATE  HelpSteer2 pairs for judge validation (once per OUT), 0 = skip              [300]
 #   JUDGE_ALL_CLOSED  1 = judge rule-failing closed samples too (judge-vs-rules check)     [0]
 #   VALIDATE_PROMPTS  judge rubric versions to validate, e.g. "v1 v2"            [config version]
+#   BY_SET    1 = run each set through teacher, judge and select before the next (time-boxed runs)  [0]
 #   OUT, REPORT  output directory and report path                       [data/pilot2, reports/pilot2.md]
 # Stop with Ctrl-C: the server is shut down and the next run resumes where this one stopped.
 set -euo pipefail
 
 BACKEND=${BACKEND:-vllm}
 LIMIT=${LIMIT:-100}
-N=${N:-8}
+N=${N:-}  # empty: samples per prompt by complexity (config generate.n_by_complexity)
 VARIANTS=${VARIANTS:-"A B"}
 DATASETS=${DATASETS:-"no_robots helpsteer2 ultrafeedback"}
 VALIDATE=${VALIDATE:-300}
 JUDGE_ALL_CLOSED=${JUDGE_ALL_CLOSED:-0}
+BY_SET=${BY_SET:-0}
 OUT=${OUT:-data/pilot2}
 REPORT=${REPORT:-reports/pilot2.md}
 
@@ -29,6 +31,7 @@ mkdir -p "$OUT"
 BK=(--backend "$BACKEND")
 LIM=()
 if [ "$LIMIT" -gt 0 ]; then LIM=(--limit "$LIMIT"); fi
+NARG=(); if [ -n "$N" ]; then NARG=(--n "$N"); fi
 start() { if [ "$BACKEND" = vllm ]; then start_server "$1"; fi; }  # OpenRouter needs no local server
 stop() { stop_server; }
 has() { [[ " $1 " == *" $2 "* ]]; }
@@ -38,51 +41,66 @@ SETS=()
 for ds in $DATASETS; do SETS+=("$ds:open"); done
 if has "$DATASETS" ultrafeedback; then SETS+=("ultrafeedback:closed"); fi
 
-echo "== teacher phase ($BACKEND)"
-start teacher
-for s in "${SETS[@]}"; do
-  ds=${s%%:*}; only=${s##*:}; name="${ds}_${only}"
-  distill rate --dataset "$ds" --only "$only" "${LIM[@]}" "${BK[@]}"
-  if has "$VARIANTS" A; then
-    distill generate --dataset "$ds" --only "$only" "${LIM[@]}" --n "$N" --mode cot --thinking off "${BK[@]}" \
-      --out "$OUT/${name}_A.jsonl"
-  fi
-  if has "$VARIANTS" B; then
-    distill generate --dataset "$ds" --only "$only" "${LIM[@]}" --n "$N" --mode open --thinking on "${BK[@]}" \
-      --out "$OUT/${name}_B_raw.jsonl"
-    distill compress "$OUT/${name}_B_raw.jsonl" "${BK[@]}" --out "$OUT/${name}_B.jsonl"
-  fi
-done
-stop
-
-echo "== filter"
-KEPT=(); KEPT_OPEN=(); KEPT_CLOSED=()
-for s in "${SETS[@]}"; do
-  name="${s%%:*}_${s##*:}"
-  for v in $VARIANTS; do
-    f="$OUT/${name}_${v}.kept.jsonl"
-    distill filter "$OUT/${name}_${v}.jsonl" --out "$f"
-    KEPT+=("$f")
-    if [ "${s##*:}" = closed ]; then KEPT_CLOSED+=("$f"); else KEPT_OPEN+=("$f"); fi
+teacher_stage() {  # SET...: rate, generate and compress with one teacher server
+  echo "== teacher phase ($BACKEND): $*"
+  start teacher
+  for s in "$@"; do
+    ds=${s%%:*}; only=${s##*:}; name="${ds}_${only}"
+    distill rate --dataset "$ds" --only "$only" "${LIM[@]}" "${BK[@]}"
+    if has "$VARIANTS" A; then
+      distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" --mode cot --thinking off "${BK[@]}" \
+        --out "$OUT/${name}_A.jsonl"
+    fi
+    if has "$VARIANTS" B; then
+      distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" --mode open --thinking on "${BK[@]}" \
+        --out "$OUT/${name}_B_raw.jsonl"
+      distill compress "$OUT/${name}_B_raw.jsonl" "${BK[@]}" --out "$OUT/${name}_B.jsonl"
+    fi
   done
-done
+  stop
+}
 
-echo "== judge phase ($BACKEND)"
-start judge
-for pv in ${VALIDATE_PROMPTS:-config}; do  # each rubric version is validated once per OUT
-  if [ "$VALIDATE" -gt 0 ] && [ ! -e "$OUT/.judge_validated_$pv" ]; then
-    PV=(); if [ "$pv" != config ]; then PV=(--prompt-version "$pv"); fi
-    distill judge --validate "$VALIDATE" "${PV[@]}" "${BK[@]}" && touch "$OUT/.judge_validated_$pv"
+ALL_KEPT=()
+filter_stage() {  # SET...: filter, and remember the kept files of this round for judging and selection
+  echo "== filter: $*"
+  KEPT=(); KEPT_OPEN=(); KEPT_CLOSED=()
+  for s in "$@"; do
+    name="${s%%:*}_${s##*:}"
+    for v in $VARIANTS; do
+      f="$OUT/${name}_${v}.kept.jsonl"
+      distill filter "$OUT/${name}_${v}.jsonl" --out "$f"
+      KEPT+=("$f"); ALL_KEPT+=("$f")
+      if [ "${s##*:}" = closed ]; then KEPT_CLOSED+=("$f"); else KEPT_OPEN+=("$f"); fi
+    done
+  done
+}
+
+judge_stage() {  # judge this round's kept files with one judge server
+  echo "== judge phase ($BACKEND)"
+  start judge
+  for pv in ${VALIDATE_PROMPTS:-config}; do  # each rubric version is validated once per OUT
+    if [ "$VALIDATE" -gt 0 ] && [ ! -e "$OUT/.judge_validated_$pv" ]; then
+      PV=(); if [ "$pv" != config ]; then PV=(--prompt-version "$pv"); fi
+      distill judge --validate "$VALIDATE" "${PV[@]}" "${BK[@]}" && touch "$OUT/.judge_validated_$pv"
+    fi
+  done
+  if [ ${#KEPT_OPEN[@]} -gt 0 ]; then distill judge "${KEPT_OPEN[@]}" "${BK[@]}"; fi
+  if [ ${#KEPT_CLOSED[@]} -gt 0 ]; then
+    ALL=(); if [ "$JUDGE_ALL_CLOSED" = 1 ]; then ALL=(--all); fi
+    distill judge "${KEPT_CLOSED[@]}" "${ALL[@]}" "${BK[@]}"
   fi
-done
-if [ ${#KEPT_OPEN[@]} -gt 0 ]; then distill judge "${KEPT_OPEN[@]}" "${BK[@]}"; fi
-if [ ${#KEPT_CLOSED[@]} -gt 0 ]; then
-  ALL=(); if [ "$JUDGE_ALL_CLOSED" = 1 ]; then ALL=(--all); fi
-  distill judge "${KEPT_CLOSED[@]}" "${ALL[@]}" "${BK[@]}"
-fi
-stop
+  stop
+}
 
-echo "== select + report"
-for f in "${KEPT[@]}"; do distill select "$f" --out "${f%.kept.jsonl}.final.jsonl"; done
-distill analyze "${KEPT[@]}" --out "$REPORT"
+select_stage() {
+  echo "== select"
+  for f in "${KEPT[@]}"; do distill select "$f" --out "${f%.kept.jsonl}.final.jsonl"; done
+}
+
+if [ "$BY_SET" = 1 ]; then  # finish each set completely before the next: a run cut short still leaves final data
+  for s in "${SETS[@]}"; do teacher_stage "$s"; filter_stage "$s"; judge_stage; select_stage; done
+else                        # one teacher phase and one judge phase for everything: fewest model swaps
+  teacher_stage "${SETS[@]}"; filter_stage "${SETS[@]}"; judge_stage; select_stage
+fi
+distill analyze "${ALL_KEPT[@]}" --out "$REPORT"
 echo "== done: final data in $OUT/*.final.jsonl, report in $REPORT"

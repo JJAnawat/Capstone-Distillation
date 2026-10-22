@@ -6,5 +6,5 @@
 #   LIMIT=5 VALIDATE=20 OUT=data/smoke_vm REPORT=reports/smoke_vm.md bash scripts/run_pilot.sh
 # Rule-failing closed samples are judged too (JUDGE_ALL_CLOSED=1), to measure how well the judge spots wrong answers.
 # Both judge rubrics are validated (VALIDATE_PROMPTS); samples are judged with the config's version.
-BACKEND=vllm LIMIT=${LIMIT:-100} JUDGE_ALL_CLOSED=${JUDGE_ALL_CLOSED:-1} VALIDATE_PROMPTS=${VALIDATE_PROMPTS:-"v1 v2"} \
+BACKEND=vllm LIMIT=${LIMIT:-100} N=${N:-8} JUDGE_ALL_CLOSED=${JUDGE_ALL_CLOSED:-1} VALIDATE_PROMPTS=${VALIDATE_PROMPTS:-"v1 v2"} \
   OUT=${OUT:-data/pilot2} REPORT=${REPORT:-reports/pilot2.md} exec bash scripts/pipeline.sh

@@ -106,6 +106,9 @@ export VLLM_CACHE_ROOT=/lambda/nfs/Fusion-SFT/aicookie/vllm-cache
 
 Settings come from environment variables: `LIMIT`, `N`, `VARIANTS`, `DATASETS`, `VALIDATE`, `JUDGE_ALL_CLOSED`, `OUT`,
 `REPORT`, `BACKEND`.
+- `BY_SET=1` runs each set through teacher, judge and select before starting the next. That costs a few minutes of
+  model swaps per set, but a time-boxed run that gets cut off still leaves finished training data for the sets it
+  completed.
 - `run_pilot.sh` sets `JUDGE_ALL_CLOSED=1`: rule-failing closed samples are judged too, so the report can show how well
   the judge separates right from wrong answers.
 - `scripts/bench.sh` reruns the pilot's no_robots generation under other server settings: concurrency 128,
@@ -168,6 +171,11 @@ Requests that fail after all retries go to `<out>.errors.jsonl` and are retried 
   - `hint` (experimental): the reference answer is a private note in the system prompt and is never stored in
     `input`. The filter's `hint_leakage` check catches phrases like "provided answer".
 - **Closed-ended prompts** use `{mode}_closed_{version}` templates, which ask for a final line `Final answer: <answer>`.
+- **Complexity sets the effort.** The rating made before generation picks the samples per prompt
+  (`generate.n_by_complexity`: 2 for level 1, otherwise `generate.n` = 4; `--n` fixes it for all). It also picks
+  the rationale's step limit (`cot.max_steps_by_complexity`: 4, 5, 6, 8, 10 steps for levels 1–5, about 40 words a
+  step), filled into `{max_steps}` / `{max_words}` in the cot and compress prompts. Unrated prompts get 6 steps.
+  The filter only rejects runaway rationales (over 600 words); the student's 2,048-token budget is the real limit.
 - **Thinking:** vLLM gets `chat_template_kwargs.enable_thinking`; OpenRouter gets `reasoning.enabled`.
   - vLLM returns reasoning in `reasoning_content`, and its token count comes from the server's `/tokenize` endpoint.
   - With thinking off, a reply filed under reasoning is moved back to the answer.
@@ -257,8 +265,19 @@ reasons) and `<out stem>.rejections.json` (counts).
 `reference_used`, `judge_model`, `judge_prompt_hash`.
 **Complexity rating** (`data/prepared/<dataset>.complexity.jsonl`): `id`, `complexity` (1–5 or null), `analysis`,
 `model`, `prompt_hash`.
-**Final row** (`select`): the generated sample without `reasoning`, plus `complexity`, `n_steps` (numbered steps in
-the rationale) and `selection` (`method` rule+judge|judge, `score`, `expected_score`, `n_candidates`, `n_passing`).
+**Final row** (`select`, `*.final.jsonl`): the training data.
+
+| field | meaning |
+|---|---|
+| `id`, `sample_idx`, `source_dataset` | which prompt and which of its samples |
+| `input`, `rationale`, `answer` | **the training sample**: prompt, then reasoning steps separated by a blank line, then the answer |
+| `closed`, `gold` | whether the prompt has a known short answer, and that answer (closed only) |
+| `complexity`, `max_steps`, `n_steps` | DeReason rating 1–5 (curriculum order), the step limit it gave, and the steps actually written |
+| `student_tokens` | `input`, `rationale`, `answer` and `total` in the **student's** tokenizer; total adds 32 chat-template tokens and must stay ≤ 2,048 |
+| `selection` | `method` (rule+judge or judge), the judge's `score` / `expected_score`, `n_candidates`, `n_passing` |
+| `teacher` | how Qwen made it: `model`, `mode`, `thinking`, `cot_method`, prompt versions/hashes, `sampling`, `seed`, `timestamp`. `max_tokens` is the **teacher's** generation cap, not the student's. `thinking_tokens` is the raw thinking (variant B), which is not in this file. `reply_tokens` is the visible reply in Qwen's tokens (for A it includes the rationale) |
+
+Raw thinking and per-call bookkeeping (`finish_reason`, `cost`, …) stay in the generation and kept files.
 
 ## Licensing
 See [docs/LICENSES.md](docs/LICENSES.md). **Everything derived from No Robots is non-commercial (CC BY-NC 4.0).**

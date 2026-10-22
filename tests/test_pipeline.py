@@ -276,6 +276,24 @@ def test_closed_prompts_get_final_answer_template(tmp_path, monkeypatch):
     assert recs["p0"]["gold"] == ["Paris"] and "gold" not in recs["p1"] and recs["p0"]["cot_method"] == "prompted"
 
 
+def test_samples_and_step_limit_follow_complexity(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "load_prompts", lambda cfg, name: PROMPTS[:3])
+    monkeypatch.setattr(data, "load_complexity", lambda ds: {"p0": 1, "p1": 5})  # p2 is unrated
+    out = tmp_path / "lv.jsonl"
+    out.write_text(json.dumps({"id": "p1", "sample_idx": 0}) + "\n", encoding="utf-8")
+    bodies = []
+    generate.run(CFG, "no_robots", mode="cot", thinking=False, out=out, client=fake_client(bodies))
+    per_prompt = {}
+    for b in bodies:
+        per_prompt.setdefault(b["messages"][1]["content"], []).append(b["messages"][0]["content"])
+    assert {q: len(s) for q, s in per_prompt.items()} == {"Question 0?": 2, "Question 1?": 3, "Question 2?": 4}
+    assert "at most 4, under 160 words" in per_prompt["Question 0?"][0]
+    assert "at most 10, under 400 words" in per_prompt["Question 1?"][0]
+    assert "at most 6, under 240 words" in per_prompt["Question 2?"][0]
+    recs = report.read_jsonl(out)[1:]
+    assert {(r["id"], r["max_steps"]) for r in recs} == {("p0", 4), ("p1", 10), ("p2", 6)}
+
+
 def test_cot_mode_requires_thinking_off():
     with pytest.raises(ValueError):
         generate.run(CFG, "no_robots", mode="cot", thinking=True, out="unused.jsonl")

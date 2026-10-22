@@ -113,6 +113,25 @@ def load_prompts(cfg, name):
     return rows
 
 
+def complexity_path(dataset):
+    """Where `rate` writes the dataset's complexity ratings (1-5)."""
+    return PREPARED_DIR / f"{dataset}.complexity.jsonl"
+
+
+def load_complexity(dataset):
+    """{id: complexity} from the dataset's ratings, or {} if it has not been rated."""
+    path = complexity_path(dataset)
+    if not path.exists():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return {j["id"]: j["complexity"] for j in map(json.loads, filter(str.strip, f))}
+
+
+def by_complexity(table, level, default):
+    """A per-level setting such as `generate.n_by_complexity` (YAML keys may load as int or str)."""
+    return table.get(level, table.get(str(level), default)) if level is not None else default
+
+
 def select_rows(cfg, dataset, mode="open", only=None, limit=None, seed=0):
     """The prompts a stage works on: hint-eligible ones in hint mode, optionally only closed or open ones, then a seeded
     stratified sample. rate and generate get the same subset from the same arguments."""

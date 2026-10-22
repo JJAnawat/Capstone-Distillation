@@ -39,7 +39,20 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 - **Rationale format (user's requirement):** numbered steps, one per paragraph, separated by a blank line (`\n\n`).
   The prompts ask for it (`cot_v2`, `compress_v2`), and `verify.format_steps` enforces it on every stored rationale.
   `count_steps` uses the same split.
-- **N = 8 samples per prompt.** The user wanted 6–10.
+- **Samples and step limit follow complexity** (decided after the pilot, 2026-10-23).
+  - N=2 for level-1 prompts and N=4 otherwise: B's best-of-2 already reached 95% usable at level 1.
+  - Step limit 4/5/6/8/10 for levels 1–5, 6 when unrated, about 40 words per step. The user found 2/3/5/8/10 at 25
+    words too harsh. The filter's `max_words` is 600, only against runaway rationales. The v3 prompts ask for facts
+    and inferences, not plans.
+  - The fixed 5-step cap had made rationales pad to 5 steps even on easy prompts.
+  - The pilot itself used N=8 and a fixed 5 steps.
+- **First full run:** variant B, `LIMIT=2500` per set (about 10k prompts), current sampling.
+  - Started overnight on 2026-10-23 with `BY_SET=1`. The GPU window ends 10:00 Thailand time (03:00 UTC), so a
+    stopper fires at 02:50 UTC.
+  - The bench is postponed: using its result needs the user's approval mid-run.
+  - The sampler is nested, so raising `LIMIT` later only adds prompts.
+- **Final rows** carry `student_tokens`, measured in the student tokenizer, and a `teacher` group. `reasoning_tokens`
+  meant raw thinking, not the rationale, and confused the user, so it is now `teacher.thinking_tokens`.
 - **Closed-ended means a known short answer.**
   - Source: UltraFeedback `correct_answers` of 4 words or fewer, from flan_v2_niv2, flan_v2_p3 and flan_v2_flan2021.
     For other sources the field is the literal string "None" or long free text.
@@ -91,10 +104,17 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   strips it.
 - The Windows console is cp1252. Set `PYTHONIOENCODING=utf-8` for ad-hoc scripts that print Thai.
 - `.sh` files must keep LF line endings (`.gitattributes`), or bash on the VM fails with `$'\r'`.
-- **VM disk:** the root disk (495 GB) has only ~3 GB free; the space belongs to others, not to this project. Models,
-  datasets and vLLM caches go on the shared NFS `/lambda/nfs/Fusion-SFT/aicookie/` via `HF_HOME` and `VLLM_CACHE_ROOT`
-  in `.vm_env` (untracked, sourced by `scripts/lib.sh` and `vm_check.sh`). Pipeline outputs are small and stay in
-  the repo.
+- **VM disk:** the root disk (495 GB) has only ~3–7 GB free; the space belongs to others, not to this project.
+  - The shared NFS (`/lambda/nfs/Fusion-SFT`) needs the `fusion` group, which `aicookie` doesn't have.
+  - So models, datasets and vLLM caches live in RAM: `HF_HOME=/dev/shm/aicookie/hf` and
+    `VLLM_CACHE_ROOT=/dev/shm/aicookie/vllm-cache`, set in `.vm_env` (untracked, sourced by `scripts/lib.sh` and
+    `vm_check.sh`). Pipeline outputs are small and stay in the repo.
+- **/dev/shm is wiped whenever the user is fully logged out** (systemd `RemoveIPC` at its default, yes), even without
+  a reboot.
+  - Re-download at the start of each session: `source .vm_env && .venv/bin/hf download Qwen/Qwen3.5-9B &&
+    .venv/bin/hf download google/gemma-4-31B-it-qat-w4a16-ct` takes about 36 s for 40 GB.
+  - If the files vanish mid-run, the next `vllm serve` downloads them again by itself.
+  - Over SSH, use `.venv/bin/...`: non-interactive shells don't activate the venv.
 
 ## Licensing
 No Robots is CC BY-NC 4.0: everything derived from it is non-commercial, so keep `source_dataset` on every row.
@@ -122,6 +142,17 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   - rule "wrong" answers were partly gold or rule misses ("Dale's farms" against "Dale");
   - B's answers are terse after thinking.
   - KV cache: 453k tokens.
+- **Pilot results (2026-10-22, `LIMIT=100`, N=8, 4 sets × 2 variants; reports/pilot2.md, judge_validation.md):**
+  - **Judge:** HelpSteer2 agreement v1 71.0%, v2 70.2% (252 pairs, no ties), so v2 stays (wider score spread).
+    Judge vs rules on closed questions: AUC about 0.5, false accept 63–74%. Mostly *noisy FLAN golds* (broken prompts,
+    debatable labels) plus about 20–25% format misses, not clearly judge failures. Needs a small human audit.
+  - **A vs B:**
+    - B is better per sample: mean score about +0.3–0.45; closed pass@1 62% vs 53%, pass@8 75% vs 66%.
+    - B's rationales carry more substance (facts, not plans).
+    - After best-of-8 the open-set gap is only about 0.1–0.2.
+  - **Best-of-k:** A still gains from 4 to 8 (+0.15–0.3 score, +2–6 points of yield). B is nearly flat after k=4.
+  - **Measured cost per prompt, judge included:** A at N=8 about 2.5 s; B at N=4 about 5.7 s; B at N=8 about 11 s.
+    Judge about 0.19 s per sample. For 10k prompts: A at N=8 about 7 h, B at N=4 about 16 h (before any bench gains).
 - Next:
   1. The user pushes to a private GitHub repo.
   2. VM session 1: setup and smoke.

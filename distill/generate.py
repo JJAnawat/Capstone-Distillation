@@ -24,6 +24,13 @@ def load_templates(mode, version):
     return base, base
 
 
+def step_limit(cfg, level):
+    """(max steps, max words) for a rationale, from the prompt's complexity rating (DeReason's step ranges)."""
+    c = cfg["cot"]
+    steps = data.by_complexity(c["max_steps_by_complexity"], level, c["default_max_steps"])
+    return steps, steps * c["words_per_step"]
+
+
 def sample_seed(seed, rid, k):
     """Seed of sample k of a prompt: distinct for every (prompt, sample) and reproducible."""
     return int(hashlib.sha256(f"{seed}:{rid}:{k}".encode()).hexdigest()[:8], 16)
@@ -87,18 +94,20 @@ def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tok
     ep = server.endpoint(cfg, "teacher", backend)
     ep["model"] = model or ep["model"]
     seed = g["seed"] if seed is None else seed
-    n = n or g["n"]
     max_tokens = max_tokens or (cfg["cot"]["max_tokens"] if mode == "cot" else g["max_tokens"])
     prompt_version = prompt_version or g["prompt_versions"][mode]
     sampling = cfg["sampling"]["thinking_on" if thinking else "thinking_off"]
     open_tmpl, closed_tmpl = load_templates(mode, prompt_version)
 
     rows = data.select_rows(cfg, dataset, mode, only, limit, seed)
+    levels = data.load_complexity(dataset)  # rated before generation; drives N and the step limit
+    n_for = (lambda r: n) if n else (lambda r: data.by_complexity(g["n_by_complexity"], levels.get(r["id"]), g["n"]))
     done = read_done_keys(out)
     # Grouped by prompt, so a prompt's samples run together and share the server's prefix cache.
-    todo = [(r, k) for r in rows for k in range(n) if (r["id"], k) not in done]
-    print(f"[generate] {dataset} mode={mode} thinking={thinking} n={n}: {len(rows)} prompts, "
-          f"{len(rows) * n - len(todo)} samples already done, {len(todo)} to run")
+    todo = [(r, k) for r in rows for k in range(n_for(r)) if (r["id"], k) not in done]
+    planned = sum(map(n_for, rows))
+    print(f"[generate] {dataset} mode={mode} thinking={thinking} n={n or 'by complexity'}: {len(rows)} prompts, "
+          f"{planned} samples, {planned - len(todo)} already done, {len(todo)} to run")
     state = {"spent": 0.0, "ok": 0, "failed": 0}
     if not todo:
         return state
@@ -112,7 +121,8 @@ def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tok
         if stop.is_set():
             return None
         system, user, prompt_hash = closed_tmpl if r.get("closed") else open_tmpl
-        kw = {"prompt": r["input"], "reference": r["reference"]}
+        max_steps, max_words = step_limit(cfg, levels.get(r["id"]))
+        kw = {"prompt": r["input"], "reference": r["reference"], "max_steps": max_steps, "max_words": max_words}
         messages = [{"role": "system", "content": system.format(**kw)}, {"role": "user", "content": user.format(**kw)}]
         s = sample_seed(seed, r["id"], k)
         body = server.build_body(ep, messages, sampling, thinking, s, max_tokens)
@@ -127,6 +137,7 @@ def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tok
                          + (p["reasoning_tokens"] + p["answer_tokens"]) * price["completion"]) / 1e6 if price else 0.0
         rec = {"id": r["id"], "sample_idx": k, "source_dataset": dataset, "input": r["input"],
                "closed": bool(r.get("closed")), **({"gold": r["gold"]} if r.get("closed") else {}), **p,
+               **({"max_steps": max_steps} if mode == "cot" else {}),
                "cot_method": "prompted" if mode == "cot" else None, "model": ep["model"], "mode": mode,
                "thinking": thinking, "prompt_version": prompt_version, "prompt_hash": prompt_hash, **sampling,
                "seed": s, "max_tokens": max_tokens,
@@ -142,7 +153,7 @@ def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tok
 
     summary = server.run_pool("generate", work, todo, out, concurrency,
                               lambda item: {"id": item[0]["id"], "sample_idx": item[1]}, dataset=dataset, mode=mode,
-                              thinking=thinking, n=n, backend=ep["backend"], model=ep["model"])
+                              thinking=thinking, n=n or "by complexity", backend=ep["backend"], model=ep["model"])
     state["ok"], state["failed"] = summary["done"], summary["failed"]
     print(f"[generate] done: {state['ok']} written, {state['failed']} failed, spent ${state['spent']:.4f}, "
           f"{summary['tok_per_s']:,.0f} tok/s")

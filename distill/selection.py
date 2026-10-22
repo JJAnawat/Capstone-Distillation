@@ -5,8 +5,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from distill import verify
-from distill.rate import load_complexity
-from distill.report import iter_jsonl, judge_path, write_jsonl
+from distill.data import load_complexity
+from distill.report import STUDENT_TEMPLATE_TOKENS, iter_jsonl, judge_path, student_counter, write_jsonl
 
 
 def trigrams(text):
@@ -42,7 +42,30 @@ def curriculum(rows, seed):
     return out
 
 
-def run(cfg, in_path, out, order=None, min_score=None):
+SAMPLING = ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")
+
+
+def final_row(r, complexity, selection, count):
+    """A training row: the sample, its curriculum and selection info, its size in the student's tokenizer, and how the
+    teacher made it. Raw thinking and the teacher call's bookkeeping stay in the generation files."""
+    sizes = {part: count(r.get(part) or "") for part in ("input", "rationale", "answer")}
+    teacher = {"model": r.get("model"), "mode": r.get("mode"), "thinking": r.get("thinking"),
+               "cot_method": r.get("cot_method"), "prompt_version": r.get("prompt_version"),
+               "prompt_hash": r.get("prompt_hash"), "compress_prompt_hash": r.get("compress_prompt_hash"),
+               "sampling": {k: r[k] for k in SAMPLING if k in r}, "seed": r.get("seed"),
+               "max_tokens": r.get("max_tokens"),             # the teacher's generation cap, not the student's
+               "thinking_tokens": r.get("reasoning_tokens", 0),  # raw thinking (variant B), not in this file
+               "reply_tokens": r.get("answer_tokens", 0),      # the visible reply; for A it includes the rationale
+               "timestamp": r.get("timestamp")}
+    return {"id": r["id"], "sample_idx": r.get("sample_idx", 0), "source_dataset": r["source_dataset"],
+            "input": r["input"], "rationale": r.get("rationale") or "", "answer": r.get("answer") or "",
+            "closed": bool(r.get("closed")), **({"gold": r["gold"]} if r.get("gold") else {}),
+            "complexity": complexity, "max_steps": r.get("max_steps"), "n_steps": verify.count_steps(r.get("rationale")),
+            "student_tokens": {**sizes, "total": sum(sizes.values()) + STUDENT_TEMPLATE_TOKENS},
+            "selection": selection, "teacher": {k: v for k, v in teacher.items() if v is not None}}
+
+
+def run(cfg, in_path, out, order=None, min_score=None, count=None):
     sc = cfg["select"]
     order = order or sc["order"]
     min_score = sc["min_score"] if min_score is None else min_score
@@ -75,12 +98,11 @@ def run(cfg, in_path, out, order=None, min_score=None):
                                  "n_candidates": len(group), "n_passing": len(passing)}
 
     levels = {ds: load_complexity(ds) for ds in {g[0]["dataset"] for g in groups.values()}}
-    rows = []  # pass 2: copy the winners
+    count = count or (student_counter(cfg["student"]["tokenizer"]) if winners else None)
+    rows = []  # pass 2: the winners as training rows; raw thinking is for analysis, never a target
     for r in iter_jsonl(in_path):
         if sel := winners.get((r["id"], r.get("sample_idx", 0))):
-            r = {k: v for k, v in r.items() if k != "reasoning"}  # raw thinking is for analysis, never a target
-            rows.append({**r, "complexity": levels[r["source_dataset"]].get(r["id"]),
-                         "n_steps": verify.count_steps(r.get("rationale")), "selection": sel})
+            rows.append(final_row(r, levels[r["source_dataset"]].get(r["id"]), sel, count))
     rows = curriculum(rows, sc["seed"]) if order == "curriculum" else random.Random(sc["seed"]).sample(rows, len(rows))
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     write_jsonl(out, rows)
