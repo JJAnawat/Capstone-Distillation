@@ -104,21 +104,29 @@ class Progress:
 def run_pool(stage, work, todo, out, concurrency, key, **info):
     """Run `work(item) -> (record, completion_tokens) | None` over `todo` on a thread pool. Each record is appended to
     `out` as soon as it finishes, so an interrupted run loses only requests in flight. Failures go to
-    <out>.errors.jsonl, tagged with `key(item)`, and are retried on the next run. Returns the run summary."""
+    <out>.errors.jsonl, tagged with `key(item)`, and are retried on the next run. Returns the run summary.
+    On Ctrl-C the queued items are dropped and the interrupt propagates at once; `cli.main` then exits without joining
+    the threads still waiting on a reply (the server may itself be shutting down and never answer)."""
     prog = Progress(stage, len(todo), out)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "a", encoding="utf-8") as fout, ThreadPoolExecutor(concurrency) as ex:
-        futures = {ex.submit(work, item): item for item in todo}
-        for fut in as_completed(futures):
-            if fut.exception():
-                with open(f"{out}.errors.jsonl", "a", encoding="utf-8") as ferr:
-                    ferr.write(json.dumps({**key(futures[fut]), "error": str(fut.exception())[:500]}) + "\n")
-                prog.update(failed=True)
-            elif (result := fut.result()) is not None:
-                rec, tokens = result
-                fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                fout.flush()
-                prog.update(tokens)
+    ex = ThreadPoolExecutor(concurrency)
+    try:
+        with open(out, "a", encoding="utf-8") as fout:
+            futures = {ex.submit(work, item): item for item in todo}
+            for fut in as_completed(futures):
+                if fut.exception():
+                    with open(f"{out}.errors.jsonl", "a", encoding="utf-8") as ferr:
+                        ferr.write(json.dumps({**key(futures[fut]), "error": str(fut.exception())[:500]}) + "\n")
+                    prog.update(failed=True)
+                elif (result := fut.result()) is not None:
+                    rec, tokens = result
+                    fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    fout.flush()
+                    prog.update(tokens)
+    except BaseException:
+        ex.shutdown(wait=False, cancel_futures=True)
+        raise
+    ex.shutdown()
     return prog.finish(**info)
 
 

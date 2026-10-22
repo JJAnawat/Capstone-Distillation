@@ -1,10 +1,12 @@
 """Offline tests: response parsing, request bodies, filters, resume, dedup and sampling. No network."""
 import json
+import threading
+import time
 
 import httpx
 import pytest
 
-from distill import data, generate, report, server
+from distill import cli, data, generate, report, server
 from helpers import CFG, completion, mock_client
 
 FCFG = CFG["filter"]
@@ -122,6 +124,36 @@ def test_wait_ready_rejects_a_server_with_another_model():
     handler = lambda request: httpx.Response(200, json={"data": [{"id": "other/model"}]})
     with pytest.raises(RuntimeError):
         server.wait_ready(CFG, "judge", client=httpx.Client(transport=httpx.MockTransport(handler)), poll_s=0)
+
+
+def test_ctrl_c_drops_queued_requests_and_returns_at_once(tmp_path, monkeypatch):
+    # On the VM, Ctrl-C also stops vLLM, so requests in flight never get a reply: run_pool must not wait for them.
+    release, started = threading.Event(), []
+
+    def work(i):
+        started.append(i)
+        if i:
+            release.wait(10)
+        return {"id": i}, 1
+
+    def interrupt(self, tokens=0, failed=False):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(server.Progress, "update", interrupt)
+    out, t0 = tmp_path / "out.jsonl", time.time()
+    with pytest.raises(KeyboardInterrupt):
+        server.run_pool("t", work, list(range(50)), out, 2, lambda i: {"id": i})
+    release.set()
+    assert time.time() - t0 < 5 and len(started) <= 3
+    assert [json.loads(line)["id"] for line in out.read_text().splitlines()] == [0]  # finished record kept
+
+
+def test_cli_exits_on_ctrl_c_without_joining_threads(monkeypatch):
+    codes = []
+    monkeypatch.setattr(cli, "run", lambda argv: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr(cli.os, "_exit", codes.append)
+    cli.main(["prepare"])
+    assert codes == [130]
 
 
 # ---------------------------------------------------------------- filters

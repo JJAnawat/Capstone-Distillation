@@ -2,7 +2,7 @@
 # Teacher throughput under different server settings, on the pilot's no_robots prompts (LIMIT prompts x N samples,
 # variants A and B). The pilot itself is the baseline: base server at concurrency 256, same prompts and seeds.
 # Run on the GPU VM after the pilot, inside tmux:
-#   tmux new -s bench 'bash scripts/bench.sh 2>&1 | tee -a logs/bench.log'
+#   tmux new -s bench 'bash scripts/bench.sh 2>&1 | tee -ai logs/bench.log'
 # Writes data/bench/<setting>_{A,B_raw}.jsonl and the comparison table reports/bench.md.
 set -euo pipefail
 LIMIT=${LIMIT:-100}

@@ -177,8 +177,11 @@ def validate(cfg, n_pairs, out="reports/judge_validation.md", concurrency=None, 
         return sa, sb, a["helpfulness"], b["helpfulness"]
 
     start = time.time()
-    with ThreadPoolExecutor(concurrency or ep["concurrency"]) as ex:
+    ex = ThreadPoolExecutor(concurrency or ep["concurrency"])
+    try:
         results = [r for r in ex.map(grade, pairs) if r]
+    finally:  # all done, or Ctrl-C: drop the queued pairs instead of waiting for them (see server.run_pool)
+        ex.shutdown(wait=False, cancel_futures=True)
     if not results:
         raise RuntimeError("no validation pair could be judged")
     ties = sum(ja == jb for ja, jb, _, _ in results) / len(results)

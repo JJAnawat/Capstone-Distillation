@@ -14,6 +14,17 @@ ONLY_HELP = "only prompts with (closed) or without (open) a known short answer"
 
 
 def main(argv=None):
+    try:
+        run(argv)
+    except KeyboardInterrupt:
+        # Records are flushed one by one. Exit without joining worker threads still blocked on a reply: a normal exit
+        # waits for them, and on Ctrl-C the vLLM server stops answering while it waits for these same connections.
+        print("interrupted", file=sys.stderr, flush=True)
+        sys.stdout.flush()
+        os._exit(130)
+
+
+def run(argv=None):
     sys.stdout.reconfigure(encoding="utf-8")
     load_dotenv(".env")
     ap = argparse.ArgumentParser(prog="distill")

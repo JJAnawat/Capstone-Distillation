@@ -72,20 +72,20 @@ bash scripts/vm_check.sh | tee reports/vm_check.txt          # again: vLLM versi
 uv run pytest
 hf download Qwen/Qwen3.5-9B && hf download google/gemma-4-31B-it-qat-w4a16-ct   # ≈38 GB
 uv run distill prepare
-tmux new -s smoke 'LIMIT=5 VALIDATE=20 OUT=data/smoke_vm REPORT=reports/smoke_vm.md bash scripts/run_pilot.sh 2>&1 | tee -a logs/smoke.log'
+tmux new -s smoke 'LIMIT=5 VALIDATE=20 OUT=data/smoke_vm REPORT=reports/smoke_vm.md bash scripts/run_pilot.sh 2>&1 | tee -ai logs/smoke.log'
 bash scripts/collect.sh smoke_vm data/smoke_vm && git add reports && git commit -m "Results: smoke_vm" && git push
 
 # Session 2: pilot, both variants, 100 prompts per set, 8 samples (~2-2.5 h; can span sessions)
-tmux new -s pilot 'bash scripts/run_pilot.sh 2>&1 | tee -a logs/pilot.log'
+tmux new -s pilot 'bash scripts/run_pilot.sh 2>&1 | tee -ai logs/pilot.log'
 bash scripts/collect.sh pilot2 data/pilot2 --data           # --data also packs kept + judge files for scp
 
 # Session 3: experiments (~1.5 h)
-tmux new -s bench 'bash scripts/bench.sh 2>&1 | tee -a logs/bench.log'   # throughput settings → reports/bench.md
+tmux new -s bench 'bash scripts/bench.sh 2>&1 | tee -ai logs/bench.log'   # throughput settings → reports/bench.md
 tmux new -s judge 'bash -c "source scripts/lib.sh && start_server judge && distill judge --validate 300 --thinking on"'
 bash scripts/collect.sh bench data/bench
 
 # Full run with the pilot's winning variant
-tmux new -s full 'VARIANTS=A bash scripts/run_full.sh 2>&1 | tee -a logs/full.log'
+tmux new -s full 'VARIANTS=A bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log'
 ```
 Monitor with `tail -f logs/pilot.log logs/vllm_teacher.log` (tmux: `Ctrl-b d` detaches, `tmux attach -t pilot`
 returns).

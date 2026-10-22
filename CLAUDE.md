@@ -105,6 +105,13 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   strips it.
 - The Windows console is cp1252. Set `PYTHONIOENCODING=utf-8` for ad-hoc scripts that print Thai.
 - `.sh` files must keep LF line endings (`.gitattributes`), or bash on the VM fails with `$'\r'`.
+- **Ctrl-C in a tmux pane** sends SIGINT to every process in it, vLLM included.
+  - On 2026-10-23 vLLM then waited for its open connections while `generate` waited, on the same connections, for
+    replies that never came. That deadlock lasts until the 2 h request timeout.
+  - Fix: `run_pool` now drops queued work, and `cli.main` exits with `os._exit(130)` without joining the threads.
+  - Launch with `tee -ai`; a plain `tee` dies too and the rest of the log is lost.
+  - In copy mode (an attached user scrolling), `tmux send-keys C-c` only leaves copy mode, so timed stoppers send
+    `tmux send-keys -X cancel` first.
 - **VM disk:** the root disk (495 GB) has only ~3–7 GB free; the space belongs to others, not to this project.
   - The shared NFS (`/lambda/nfs/Fusion-SFT`) needs the `fusion` group, which `aicookie` doesn't have.
   - So models, datasets and vLLM caches live in RAM: `HF_HOME=/dev/shm/aicookie/hf` and
@@ -133,7 +140,7 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   - **Claude now drives the VM** over SSH from the laptop (`ssh -o BatchMode=yes aicookie@193.122.152.236 '…'`; key
     login works), and the user approves each command.
   - Code reaches the VM through commit, push, then `git pull` on the VM.
-  - Runs go in detached tmux sessions: `tmux new -d -s <name> "… | tee -a logs/<name>.log"`.
+  - Runs go in detached tmux sessions: `tmux new -d -s <name> "… 2>&1 | tee -ai logs/<name>.log"` (`-i`: Ctrl-C reaches the whole pane, and a dead tee loses the rest of the log).
   - VM facts: vLLM 0.32.0, torch 2.13. There is no nvcc, so `VLLM_USE_FLASHINFER_SAMPLER=0` via `serve_env`. The
     models are in `/dev/shm` (`.vm_env`).
 - Smoke run (`LIMIT=5`, 2026-10-21) passed end to end. Findings:
