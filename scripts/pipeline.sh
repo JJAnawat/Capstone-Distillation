@@ -4,6 +4,7 @@
 # Settings come from the environment (the run_*.sh wrappers set them):
 #   BACKEND   vllm (start/stop local servers; GPU VM) | openrouter (laptop smoke test)   [vllm]
 #   LIMIT     prompts per dataset and subset, 0 = all                                      [100]
+#   LIMIT_CLOSED  prompts in the UltraFeedback closed set (noisy known answers)          [LIMIT]
 #   N         samples per prompt for every prompt; empty = by complexity (config)      [config]
 #   VARIANTS  "A B": A = thinking off + <reasoning> tags, B = thinking on + compress      ["A B"]
 #   DATASETS  datasets to run                                     ["no_robots helpsteer2 ultrafeedback"]
@@ -17,6 +18,7 @@ set -euo pipefail
 
 BACKEND=${BACKEND:-vllm}
 LIMIT=${LIMIT:-100}
+LIMIT_CLOSED=${LIMIT_CLOSED:-$LIMIT}  # the noisy known-answer set can be smaller
 N=${N:-}  # empty: samples per prompt by complexity (config generate.n_by_complexity)
 VARIANTS=${VARIANTS:-"A B"}
 DATASETS=${DATASETS:-"no_robots helpsteer2 ultrafeedback"}
@@ -29,8 +31,10 @@ REPORT=${REPORT:-reports/pilot2.md}
 source scripts/lib.sh
 mkdir -p "$OUT"
 BK=(--backend "$BACKEND")
-LIM=()
-if [ "$LIMIT" -gt 0 ]; then LIM=(--limit "$LIMIT"); fi
+limit_args() {  # --limit for a set: LIMIT, or LIMIT_CLOSED for the closed set (0 = all)
+  local l=$LIMIT; if [ "$1" = closed ]; then l=$LIMIT_CLOSED; fi
+  if [ "$l" -gt 0 ]; then echo "--limit $l"; fi
+}
 NARG=(); if [ -n "$N" ]; then NARG=(--n "$N"); fi
 start() { if [ "$BACKEND" = vllm ]; then start_server "$1"; fi; }  # OpenRouter needs no local server
 stop() { stop_server; }
@@ -46,6 +50,7 @@ teacher_stage() {  # SET...: rate, generate and compress with one teacher server
   start teacher
   for s in "$@"; do
     ds=${s%%:*}; only=${s##*:}; name="${ds}_${only}"
+    read -r -a LIM <<< "$(limit_args "$only")"
     distill rate --dataset "$ds" --only "$only" "${LIM[@]}" "${BK[@]}"
     if has "$VARIANTS" A; then
       distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" --mode cot --thinking off "${BK[@]}" \

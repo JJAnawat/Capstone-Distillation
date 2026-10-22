@@ -46,7 +46,8 @@ prepare → rate → generate → compress (variant B only) → filter → judge
     and inferences, not plans.
   - The fixed 5-step cap had made rationales pad to 5 steps even on easy prompts.
   - The pilot itself used N=8 and a fixed 5 steps.
-- **First full run:** variant B, `LIMIT=2500` per set (about 10k prompts), current sampling.
+- **First full run:** variant B, `LIMIT=2500` per set, except the UltraFeedback closed set, which gets
+  `LIMIT_CLOSED=500` because of its noisy known answers. About 8k prompts, current sampling.
   - Started overnight on 2026-10-23 with `BY_SET=1`. The GPU window ends 10:00 Thailand time (03:00 UTC), so a
     stopper fires at 02:50 UTC.
   - The bench is postponed: using its result needs the user's approval mid-run.
