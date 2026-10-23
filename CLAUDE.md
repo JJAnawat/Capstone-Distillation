@@ -23,9 +23,13 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 
 ## Where things run
 - **Laptop (Windows 11):** all coding and the offline tests. There is no GPU. Shells: PowerShell and Git Bash.
-- **GitHub:** the user commits and pushes. Don't commit or push unless asked.
-- **GPU VM:** an A100 40GB inside a company machine, reached over SSH (Linux). The user pulls there and runs
-  `scripts/run_pilot.sh` or `scripts/run_full.sh` in tmux. Claude can't reach the VM unless the user sets up an ssh alias.
+- **GitHub:** Claude commits and pushes, and the user approves each command.
+- **GPU VM:** an A100 40GB inside a company machine (Linux).
+  - **Claude drives it over SSH** from the laptop (`ssh -o BatchMode=yes aicookie@193.122.152.236 '…'`, key login),
+    and the user approves each command.
+  - Code gets there by commit, push, then `git pull` on the VM.
+  - GPU time comes in windows the user announces (night 1 ended 10:00 Thailand time, 03:00 UTC). Light CPU work on
+    the VM is fine outside them.
 
 ## Key decisions and why
 - **Every training target is short CoT + answer, never Qwen's raw thinking.**
@@ -33,11 +37,10 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - Models of 3B or smaller learn poorly from long CoT (Li et al. 2025, "Small Models Struggle to Learn from Strong
     Reasoners"). Short rationales with many samples per question do work at 125M–1.3B (SCoTD, Li et al. 2023).
   - Raw traces stay in the generation files for analysis only; `select` drops them.
-- **Two ways to make the CoT short, compared in the pilot.** Pick one after the pilot.
-  - A "prompted": thinking off, at most 5 steps inside `<reasoning>` tags.
-  - B "compressed": thinking on, then `compress` rewrites the trace into at most 5 steps.
+- **Variant B won the pilot and is used for the full run:** thinking on, then `compress` rewrites the trace into
+  short steps. Variant A (thinking off, steps inside `<reasoning>` tags) stays in the code for comparison.
 - **Rationale format (user's requirement):** numbered steps, one per paragraph, separated by a blank line (`\n\n`).
-  The prompts ask for it (`cot_v2`, `compress_v2`), and `verify.format_steps` enforces it on every stored rationale.
+  The prompts ask for it (`cot_v3`, `compress_v3`), and `verify.format_steps` enforces it on every stored rationale.
   `count_steps` uses the same split.
 - **Samples and step limit follow complexity** (decided after the pilot, 2026-10-23).
   - N=2 for level-1 prompts and N=4 otherwise: B's best-of-2 already reached 95% usable at level 1.
@@ -48,8 +51,8 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - The pilot itself used N=8 and a fixed 5 steps.
 - **First full run:** variant B, `LIMIT=2500` per set, except the UltraFeedback closed set, which gets
   `LIMIT_CLOSED=500` because of its noisy known answers. About 8k prompts, current sampling.
-  - Started overnight on 2026-10-23 with `BY_SET=1`. The GPU window ends 10:00 Thailand time (03:00 UTC), so a
-    stopper fires at 02:50 UTC.
+  - It runs with `BY_SET=1` in tmux. A `stopper` tmux session sends Ctrl-C 10 min before the GPU window ends
+    (command under Status).
   - The bench is postponed: using its result needs the user's approval mid-run.
   - The sampler is nested, so raising `LIMIT` later only adds prompts.
   - **Night 1 (2026-10-22 17:52 to 23:34 UTC):** No Robots (2,296 final rows) and HelpSteer2 (2,322) finished.
@@ -99,9 +102,8 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 - VM: the README's "VM sessions" section. Session 1: `vm_check.sh`, install, download, a `LIMIT=5` smoke run.
   Session 2: `run_pilot.sh`. Session 3: `bench.sh` and judge validation with thinking on. Each session ends with
   `scripts/collect.sh <name> <out_dir>`, then a commit and push of `reports/`.
-- **How results reach Claude:** the user runs everything on the VM, then pushes `reports/<name>/` and the Markdown
-  reports. After a pull on the laptop, read `reports/<name>/` and the report. Larger data comes as
-  `data/<name>_data.tar.gz` over scp.
+- **How results reach Claude:** read them over SSH (`logs/full.log`, `data/full/`), and scp data to
+  `data/vm/<name>/` on the laptop (gitignored). `collect.sh` and `reports/` are for the user's own copies.
 
 ## Conventions
 - `config.yaml` is the single source of truth; CLI flags override it. `DISTILL_CONFIG=path` swaps in another config
@@ -126,6 +128,9 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   strips it.
 - The Windows console is cp1252. Set `PYTHONIOENCODING=utf-8` for ad-hoc scripts that print Thai.
 - `.sh` files must keep LF line endings (`.gitattributes`), or bash on the VM fails with `$'\r'`.
+- Don't `git pull` on the VM while a pipeline script runs: bash reads scripts as it executes them.
+- In Git Bash, Python heredocs that rewrite files turned escape sequences into real newlines. Use the Edit tool for
+  text that contains them.
 - **Ctrl-C in a tmux pane** sends SIGINT to every process in it, vLLM included.
   - On 2026-10-23 vLLM then waited for its open connections while `generate` waited, on the same connections, for
     replies that never came. That deadlock lasts until the 2 h request timeout.
@@ -156,47 +161,31 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 No Robots is CC BY-NC 4.0: everything derived from it is non-commercial, so keep `source_dataset` on every row.
 Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 
-## Status (2026-10-21)
-- Done: the OpenRouter pilot (30 prompts, thinking on/off; reports/pilot.md).
-- Built: the local-vLLM pipeline with N samples, rating, compress, filter budgets, judge, rule checks and curriculum
-  selection. Also the VM tooling: `vm_check.sh`, `collect.sh`, `bench.sh`, clean Ctrl-C stop and resume,
-  `judge --all` / `--thinking`, and report sections for best-of-k, judge vs rules and logprob detail.
-  - Tested offline (73 tests), plus dry runs of `pipeline.sh`, `collect.sh` and `bench.sh` against a fake
-    OpenAI-compatible server.
-  - It has not yet run against real models.
-- The user got VM access on 2026-10-21: exclusive, a few hours per day. The OpenRouter smoke test is skipped.
-  - **Claude now drives the VM** over SSH from the laptop (`ssh -o BatchMode=yes aicookie@193.122.152.236 '…'`; key
-    login works), and the user approves each command.
-  - Code reaches the VM through commit, push, then `git pull` on the VM.
-  - Runs go in detached tmux sessions: `tmux new -d -s <name> "… 2>&1 | tee -ai logs/<name>.log"` (`-i`: Ctrl-C reaches the whole pane, and a dead tee loses the rest of the log).
-  - VM facts: vLLM 0.32.0, torch 2.13. There is no nvcc, so `VLLM_USE_FLASHINFER_SAMPLER=0` via `serve_env`. The
-    models are in `/dev/shm` (`.vm_env`).
-- Smoke run (`LIMIT=5`, 2026-10-21) passed end to end. Findings:
-  - judge v1 saturates at 9, so v2 was written;
-  - A sometimes skipped the tags, so `cot_v2` makes them mandatory;
-  - language-ID prompts were false language mismatches, so they now skip the check;
-  - rule "wrong" answers were partly gold or rule misses ("Dale's farms" against "Dale");
-  - B's answers are terse after thinking.
-  - KV cache: 453k tokens.
-- **Pilot results (2026-10-22, `LIMIT=100`, N=8, 4 sets × 2 variants; reports/pilot2.md, judge_validation.md):**
-  - **Judge:** HelpSteer2 agreement v1 71.0%, v2 70.2% (252 pairs, no ties), so v2 stays (wider score spread).
-    Judge vs rules on closed questions: AUC about 0.5, false accept 63–74%. Mostly *noisy FLAN golds* (broken prompts,
-    debatable labels) plus about 20–25% format misses, not clearly judge failures. Needs a small human audit.
-  - **A vs B:**
-    - B is better per sample: mean score about +0.3–0.45; closed pass@1 62% vs 53%, pass@8 75% vs 66%.
-    - B's rationales carry more substance (facts, not plans).
-    - After best-of-8 the open-set gap is only about 0.1–0.2.
-  - **Best-of-k:** A still gains from 4 to 8 (+0.15–0.3 score, +2–6 points of yield). B is nearly flat after k=4.
-  - **Measured cost per prompt, judge included:** A at N=8 about 2.5 s; B at N=4 about 5.7 s; B at N=8 about 11 s.
-    Judge about 0.19 s per sample. For 10k prompts: A at N=8 about 7 h, B at N=4 about 16 h (before any bench gains).
-- Next:
-  1. The user pushes to a private GitHub repo.
-  2. VM session 1: setup and smoke.
-  3. Session 2: pilot.
-  4. Session 3: bench and judge thinking on vs off.
-  5. Decide A or B, N, the judge setup and the server flags; size the full run in daily sessions.
-- What decides each question:
-  - **A vs B:** matched-prompt scores, pass@8, yield and student-token fit, plus a hand review. B costs ~6× the teacher
-    tokens, so it must win clearly.
-  - **N:** the best-of-k curve. If k=4 comes within ~0.1 score and ~2 points of yield of k=8, use N=4.
-  - **Judge:** HelpSteer2 agreement of about 70% or more; judge-vs-rules AUC and false-accept rate.
+## Status (2026-10-23)
+- **Built and in use on the VM:** the full pipeline, with resume, clean Ctrl-C, per-set mode, the shared-GPU fit,
+  and the Hub backup with its dataset card. 89 offline tests.
+- **Pilot (2026-10-22: 100 prompts per set, N=8; reports/pilot2.md, reports/judge_validation.md):**
+  - **Judge:** HelpSteer2 agreement was 71.0% for v1 and 70.2% for v2. v2 stays for its wider score spread.
+  - **Judge vs rules on closed questions:** AUC about 0.5, mostly from noisy FLAN golds. A small human audit is
+    still open.
+  - **B vs A:** B scored higher per sample (mean +0.3–0.45; closed pass@1 62% vs 53%), and its rationales state
+    facts, not plans. B gains almost nothing after best-of-4.
+  - **Cost:** B at N=4 takes about 5.7 s per prompt, judging included.
+- **Full run, night 1** (details under Key decisions): No Robots and HelpSteer2 are done.
+  - Their final rows are in `data/full` on the VM, on the Hub, and on the laptop in `data/vm/full_night1/`.
+  - Report for these two sets: `data/vm/full_night1/reports/full.md`.
+- **Next GPU session:**
+  1. `git pull`, then re-download the models into `/dev/shm`, which is wiped at logout.
+  2. Resume (about 3h20m):
+     `tmux new -d -s full "DATASETS=ultrafeedback BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log"`
+  3. If the window ends first, add a stopper. Set S to the seconds until 10 min before the end:
+     `tmux new -d -s stopper "sleep $S; tmux send-keys -t full -X cancel 2>/dev/null; tmux send-keys -t full C-c"`
+  4. Afterwards, the report covers all four sets. Review it and some samples with the user, and copy the data to
+     the laptop.
+- **Open, later:**
+  - the bench (`bench.sh`);
+  - judge validation with thinking on;
+  - the closed-gold audit;
+  - Thai translation (undecided);
+  - the licensing TODOs in docs/LICENSES.md.
+- **Left to the user:** narrow the VM token to the dataset repo only, and delete the old `JuyJuy` token.
