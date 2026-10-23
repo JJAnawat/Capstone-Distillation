@@ -116,8 +116,10 @@ committed), not in `config.yaml`.
    finished in an earlier session.
 
 Before starting a server, `start_server` refuses only if our own processes hold the GPU (a server left from an earlier
-run). The GPU can be shared: other users' processes are listed as a note, and vLLM itself refuses to start if the free
-memory is short of `--gpu-memory-utilization`.
+run). The GPU can be shared: other users' processes are listed as a note and never stopped. `distill serve` then
+lowers `--gpu-memory-utilization` to the free memory minus `gpu_share.headroom_gib`. The weights are fixed, so only
+the KV cache shrinks and fewer requests run at once. If not even the role's `min_gpu_gib` fits, it waits up to
+`gpu_share.wait_s` and then fails.
 
 Settings come from environment variables: `LIMIT`, `N`, `VARIANTS`, `DATASETS`, `VALIDATE`, `JUDGE_ALL_CLOSED`, `OUT`,
 `REPORT`, `BACKEND`.

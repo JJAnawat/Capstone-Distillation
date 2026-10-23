@@ -112,6 +112,33 @@ def test_serve_command_appends_extra_vllm_args(monkeypatch):
     assert server.serve_env(CFG, "teacher") == server.serve_env(CFG, "judge") == {"VLLM_USE_FLASHINFER_SAMPLER": "0"}
 
 
+def memory_readings(*free_gib, total_gib=40):
+    readings = iter([(f * 1024, total_gib * 1024) for f in free_gib])
+    return lambda: next(readings)
+
+
+def test_fit_gpu_keeps_the_config_on_a_free_gpu_and_shrinks_beside_others():
+    cmd = server.serve_command(CFG, "teacher")
+    assert server.fit_gpu(CFG, "teacher", cmd, memory_readings(39.9)) == cmd  # 0.92 fits
+    assert server.fit_gpu(CFG, "teacher", cmd, lambda: None) == cmd           # no nvidia-smi: the laptop
+    shrunk = server.fit_gpu(CFG, "teacher", cmd, memory_readings(30))         # another user holds 10 GiB
+    assert shrunk[-1] == "--gpu-memory-utilization=0.7" and server.requested_utilization(shrunk) == 0.7
+    assert sum(a.startswith("--gpu-memory-utilization") for a in shrunk) == 1
+    assert server.with_utilization(["vllm", "--gpu-memory-utilization", "0.9", "--port=1"], 0.5) == [
+        "vllm", "--port=1", "--gpu-memory-utilization=0.5"]
+
+
+def test_fit_gpu_waits_for_memory_then_gives_up():
+    sleeps = []
+    cmd = server.serve_command(CFG, "judge")
+    # 20 GiB free is short of the judge's minimum; the second reading (36 GiB) fits.
+    assert server.fit_gpu(CFG, "judge", cmd, memory_readings(20, 36), sleeps.append)[-1].endswith("=0.85")
+    assert len(sleeps) == 1
+    cfg = {**CFG, "gpu_share": {**CFG["gpu_share"], "wait_s": 0}}
+    with pytest.raises(RuntimeError, match="judge needs"):
+        server.fit_gpu(cfg, "judge", cmd, lambda: (20 * 1024, 40 * 1024), lambda s: None)
+
+
 def test_wait_ready_fails_fast_when_the_server_dies(monkeypatch):
     monkeypatch.setattr(server, "alive", lambda pid: False)
     handler = lambda request: httpx.Response(503)

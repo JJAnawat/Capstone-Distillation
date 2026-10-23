@@ -24,6 +24,7 @@ start_server() {  # ROLE [EXTRA_VLLM_ARGS]: start `vllm serve` and wait until it
     echo "note: other users' processes on the GPU: $(tr '\n' ' ' <<< "$others")" >&2
   fi
   echo "=== $(date -u +%FT%TZ) start $1 ${2:-}" >> "logs/vllm_$1.log"
+  local mark; mark=$(wc -l < "logs/vllm_$1.log")
   DISTILL_SERVE_ARGS="${2:-}" distill serve "$1" >> "logs/vllm_$1.log" 2>&1 &
   SERVER=$!
   if ! distill wait "$1" --pid "$SERVER"; then
@@ -31,6 +32,7 @@ start_server() {  # ROLE [EXTRA_VLLM_ARGS]: start `vllm serve` and wait until it
     tail -n 40 "logs/vllm_$1.log" >&2
     return 1
   fi
+  tail -n +"$mark" "logs/vllm_$1.log" | grep "^\[serve\] other processes" || true  # started smaller on a shared GPU
 }
 stop_server() {  # shut the server down and wait until its processes have released the GPU for the next model
   if [ -z "$SERVER" ]; then return; fi

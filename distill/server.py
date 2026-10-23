@@ -1,9 +1,11 @@
 """HTTP plumbing shared by every stage: endpoints, request bodies, retries, a thread-pool runner, and starting or
 waiting for a local vLLM server."""
 import json
+import math
 import os
 import random
 import shlex
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -142,9 +144,74 @@ def serve_env(cfg, role):
     return {k: str(v) for k, v in (endpoint(cfg, role, "vllm").get("serve_env") or {}).items()}
 
 
+UTIL_FLAG = "--gpu-memory-utilization"
+
+
+def requested_utilization(cmd):
+    """The last --gpu-memory-utilization in `cmd`, as `--flag=x` or `--flag x` (vLLM's default 0.92 if absent)."""
+    util = 0.92
+    for i, a in enumerate(cmd):
+        if a.startswith(UTIL_FLAG + "="):
+            util = float(a.split("=", 1)[1])
+        elif a == UTIL_FLAG and i + 1 < len(cmd):
+            util = float(cmd[i + 1])
+    return util
+
+
+def with_utilization(cmd, util):
+    """`cmd` with every --gpu-memory-utilization replaced by one set to `util`."""
+    out, i = [], 0
+    while i < len(cmd):
+        if cmd[i] == UTIL_FLAG:
+            i += 2
+            continue
+        if not cmd[i].startswith(UTIL_FLAG + "="):
+            out.append(cmd[i])
+        i += 1
+    return out + [f"{UTIL_FLAG}={util}"]
+
+
+def gpu_memory_mib():
+    """(free, total) MiB of the GPU from nvidia-smi, or None where there is none (the laptop)."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free,memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    free, total = map(float, out.splitlines()[0].split(","))
+    return free, total
+
+
+def fit_gpu(cfg, role, cmd, memory=gpu_memory_mib, sleep=time.sleep):
+    """`cmd` with --gpu-memory-utilization lowered so the server fits beside other users' processes on a shared GPU,
+    leaving `gpu_share.headroom_gib` free for them. Only the KV cache shrinks, so fewer requests run at once. Waits up
+    to `gpu_share.wait_s` while not even the role's `min_gpu_gib` fits, then raises."""
+    share, min_gib = cfg.get("gpu_share"), endpoint(cfg, role, "vllm").get("min_gpu_gib")
+    if not share or not min_gib:
+        return cmd
+    requested, deadline = requested_utilization(cmd), time.time() + share["wait_s"]
+    while (mem := memory()) is not None:
+        free, total = mem
+        usable = free / 1024 - share["headroom_gib"]
+        if usable >= min_gib:
+            util = min(requested, math.floor(usable * 1024 / total * 100) / 100)
+            if util == requested:
+                return cmd
+            print(f"[serve] other processes use {(total - free) / 1024:.1f} GiB of the GPU: {UTIL_FLAG} {util} "
+                  f"instead of {requested} (a smaller KV cache)", flush=True)
+            return with_utilization(cmd, util)
+        need = min_gib + share["headroom_gib"]
+        if time.time() >= deadline:
+            raise RuntimeError(f"only {free / 1024:.1f} GiB of GPU memory free after waiting {share['wait_s']}s; "
+                               f"the {role} needs {need:.1f} GiB (min_gpu_gib + headroom)")
+        print(f"[serve] waiting for GPU memory: {free / 1024:.1f} GiB free, the {role} needs {need:.1f} GiB", flush=True)
+        sleep(share["poll_s"])
+    return cmd
+
+
 def serve(cfg, role):
-    """Replace this process with `vllm serve` for `role` (GPU VM only)."""
-    cmd, env = serve_command(cfg, role), serve_env(cfg, role)
+    """Replace this process with `vllm serve` for `role` (GPU VM only), sized to the free GPU memory (`fit_gpu`)."""
+    cmd, env = fit_gpu(cfg, role, serve_command(cfg, role)), serve_env(cfg, role)
     print("[serve]", " ".join(f"{k}={v}" for k, v in env.items()), " ".join(cmd), flush=True)
     os.environ.update(env)
     os.execvp(cmd[0], cmd)

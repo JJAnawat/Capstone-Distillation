@@ -4,11 +4,17 @@
 backend: vllm
 openrouter_api_base: https://openrouter.ai/api/v1
 
+# The GPU can be shared with other users. `distill serve` lowers --gpu-memory-utilization to the free memory minus
+# headroom_gib (left for their processes); only the KV cache shrinks. While not even the role's min_gpu_gib fits, it
+# waits up to wait_s, then fails. Other users' processes are never stopped.
+gpu_share: {headroom_gib: 2.0, wait_s: 900, poll_s: 30}
+
 teacher:
   vllm:
     model: Qwen/Qwen3.5-9B
     api_base: http://localhost:8000/v1   # keep the port in sync with --port below
     concurrency: 256                     # in-flight requests; vLLM batches them
+    min_gpu_gib: 25                      # weights 16.7 GiB + ~2 GiB overhead + a ~6 GiB KV cache (full: 18.5 GiB)
     timeout_s: 7200                      # a long sample under full batching can take many minutes
     startup_timeout_s: 1800              # the first start downloads ~18 GB of weights
     # The VM has no CUDA compiler, so FlashInfer cannot build its sampling kernel: use vLLM's PyTorch sampler.
@@ -34,6 +40,7 @@ judge:
     model: google/gemma-4-31B-it-qat-w4a16-ct   # official QAT int4 checkpoint, ~19.8 GB; cannot share the GPU with the teacher
     api_base: http://localhost:8000/v1
     concurrency: 128
+    min_gpu_gib: 29                      # weights 18.7 GiB + ~2 GiB + ~8 GiB KV, which must hold a 32k-token request
     timeout_s: 1800
     startup_timeout_s: 1800
     logprobs: true                       # expected score from the score token's distribution
@@ -113,7 +120,7 @@ select:
 # Backup (`distill push`; pipeline.sh runs it after every set): a private Hugging Face dataset repo, null = none.
 # Needs a write token on the machine, e.g. `export HF_TOKEN=...` in .vm_env (HF_HOME there is wiped on logout).
 hub:
-  repo: null
+  repo: JuyJuy/capstone-distill-data
 
 # Order matters: a prompt seen in an earlier dataset is dropped from later ones.
 # hint.min_ratings: the best reference response must meet every threshold to be used in hint mode.

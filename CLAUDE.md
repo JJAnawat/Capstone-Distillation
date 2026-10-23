@@ -61,6 +61,10 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 - **Hub backup:** generated data lives only on the VM. `distill push` copies a run and the complexity ratings to a
   private Hugging Face dataset repo (`hub.repo`), and the pipeline runs it after every finished set. The token goes
   in `.vm_env`, never in the config.
+  - Repo: `JuyJuy/capstone-distill-data`, private on purpose. Night 1 went up on 2026-10-23 (29 files, 469 MiB).
+  - The VM's token is fine-grained, but it was pasted into the chat, so it should be replaced and revoked.
+  - It stays private until a deliberate release: the final rows with a dataset card, once the company-hardware and
+    Qwen terms questions in docs/LICENSES.md are settled.
 - **Final rows** carry `student_tokens`, measured in the student tokenizer, and a `teacher` group. `reasoning_tokens`
   meant raw thinking, not the rationale, and confused the user, so it is now `teacher.thinking_tokens`.
 - **Closed-ended means a known short answer.**
@@ -124,7 +128,9 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 - **The GPU is shared** in spite of the "exclusive" window. On night 1 another user (`ubuntu`) ran a web app
   (uvicorn on port 8010, about 1.7 GB) on it.
   - `start_server` now refuses only when our own processes hold the GPU, and `stop_server` waits only for ours.
-    vLLM checks the free memory itself: 0.92 of 39.5 GiB still fits beside 1.7 GB.
+  - `distill serve` lowers `--gpu-memory-utilization` to fit beside other processes (`gpu_share`, `min_gpu_gib`).
+    Weights are fixed (teacher 16.7 GiB, judge 18.7 GiB), so only the KV cache shrinks (full: 18.5 and 16.4 GiB).
+    Below the minimum it waits up to 15 min, then fails.
   - If someone else's process grows during a run, either side can run out of memory.
 - **VM disk:** the root disk (495 GB) has only ~3–7 GB free; the space belongs to others, not to this project.
   - The shared NFS (`/lambda/nfs/Fusion-SFT`) needs the `fusion` group, which `aicookie` doesn't have.
