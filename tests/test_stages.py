@@ -4,6 +4,7 @@ import math
 import types
 
 import pytest
+import yaml
 
 from distill import compress, data, generate, hub, judge, rate, report, selection, server, verify
 from helpers import CFG, completion, gen_row, mock_client
@@ -327,6 +328,9 @@ class FakeHub:
     def upload_folder(self, **kw):
         self.calls.append(("upload", kw))
 
+    def upload_file(self, **kw):
+        self.calls.append(("file", kw))
+
 
 def test_push_backs_up_the_run_and_ratings_to_a_private_repo(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -335,10 +339,11 @@ def test_push_backs_up_the_run_and_ratings_to_a_private_repo(tmp_path, monkeypat
         (tmp_path / f).write_text("{}\n")
     api = FakeHub()
     assert hub.push({"hub": {"repo": "me/backup"}}, "data/full", api=api)
-    create, run, ratings = api.calls
+    create, run, ratings, readme = api.calls
     assert create == ("create", "me/backup", {"repo_type": "dataset", "private": True, "exist_ok": True})
     assert run[1]["path_in_repo"] == "data/full" and run[1]["allow_patterns"] == hub.RUN_FILES
     assert ratings[1]["path_in_repo"] == "data/prepared" and ratings[1]["allow_patterns"] == hub.RATINGS
+    assert readme[1]["path_in_repo"] == "README.md" and b"config_name: final" in readme[1]["path_or_fileobj"]
 
 
 def test_push_refuses_a_public_repo_and_skips_without_one(tmp_path, monkeypatch):
@@ -349,3 +354,31 @@ def test_push_refuses_a_public_repo_and_skips_without_one(tmp_path, monkeypatch)
         hub.push({"hub": {"repo": "me/backup"}}, "data/full", api=api)
     assert [c[0] for c in api.calls] == ["create"]  # nothing uploaded
     assert hub.push({"hub": {"repo": None}}, "data/full", api=FakeHub()) is False
+
+
+def test_card_names_a_subset_per_stage_and_a_split_per_set(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    run, prepared = tmp_path / "data/full", tmp_path / "data/prepared"
+    run.mkdir(parents=True)
+    prepared.mkdir(parents=True)
+    final = [{"id": "a", "complexity": 1, "input": "Easy?", "rationale": "1. Easy.", "answer": "Yes."},
+             {"id": "b", "complexity": 3, "input": "Why?", "rationale": "1. One.\n\n2. Two.", "answer": "Because.",
+              "selection": {"score": 8}}]
+    report.write_jsonl(run / "no_robots_open_B.final.jsonl", final)
+    for name in ("no_robots_open_B.jsonl", "no_robots_open_B_raw.jsonl", "no_robots_open_B.kept.jsonl",
+                 "no_robots_open_B.kept.judge.jsonl", "ultrafeedback_closed_B_raw.jsonl",
+                 "ultrafeedback_closed_B.kept.judge.jsonl", "no_robots_open_B.jsonl.runs.jsonl"):
+        (run / name).write_text("{}\n{}\n")
+    (prepared / "no_robots.complexity.jsonl").write_text("{}\n")
+    text = hub.card("data/full", "org/data")
+    meta = yaml.safe_load(text.split("---")[1])
+    subsets = {c["config_name"]: [(f["split"], f["path"]) for f in c["data_files"]] for c in meta["configs"]}
+    # No rejected file yet; raw and kept files are left out. Closed rows carry `gold`, so they get their own subsets.
+    assert list(subsets) == ["final", "judge", "judge_closed", "samples", "ratings"]
+    assert subsets["final"] == [("no_robots", "data/full/no_robots_open_B.final.jsonl")]
+    assert subsets["judge_closed"] == [("ultrafeedback", "data/full/ultrafeedback_closed_B.kept.judge.jsonl")]
+    assert subsets["samples"] == [("no_robots", "data/full/no_robots_open_B.jsonl")]
+    assert subsets["ratings"] == [("no_robots", "data/prepared/no_robots.complexity.jsonl")]
+    assert "| ultrafeedback (closed) | 2 | — | in progress | — |" in text  # generating: only the raw file so far
+    assert "| no_robots | 2 | 2 | 2 | 1 / 0 / 1 / 0 / 0 / 0 |" in text
+    assert "### no_robots: complexity 3, judge score 8" in text and "<!--" not in text and "org/data" in text
