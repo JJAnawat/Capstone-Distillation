@@ -1,10 +1,11 @@
 """Offline tests for the stages after generation: rating, compression, rule checks, judging, selection and the report."""
 import json
 import math
+import types
 
 import pytest
 
-from distill import compress, data, generate, judge, rate, report, selection, server, verify
+from distill import compress, data, generate, hub, judge, rate, report, selection, server, verify
 from helpers import CFG, completion, gen_row, mock_client
 
 
@@ -309,3 +310,42 @@ def test_analyze_compares_variants(tmp_path, monkeypatch):
     assert "mean score / mean best-of-N" in text and "By complexity level" in text
     assert "judge scores with logprob detail" in text and "judge vs rules: AUC (correct scored above wrong) | 1.00" in text
     assert "Best-of-k (open/on/compressed; 1 prompts)" in text and "pass@k" in text
+
+
+# ---------------------------------------------------------------- hub backup
+
+class FakeHub:
+    def __init__(self, private=True):
+        self.private, self.calls = private, []
+
+    def create_repo(self, repo, **kw):
+        self.calls.append(("create", repo, kw))
+
+    def repo_info(self, repo, **kw):
+        return types.SimpleNamespace(private=self.private)
+
+    def upload_folder(self, **kw):
+        self.calls.append(("upload", kw))
+
+
+def test_push_backs_up_the_run_and_ratings_to_a_private_repo(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for f in ("data/full/no_robots_open_B.final.jsonl", "data/prepared/no_robots.complexity.jsonl"):
+        (tmp_path / f).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / f).write_text("{}\n")
+    api = FakeHub()
+    assert hub.push({"hub": {"repo": "me/backup"}}, "data/full", api=api)
+    create, run, ratings = api.calls
+    assert create == ("create", "me/backup", {"repo_type": "dataset", "private": True, "exist_ok": True})
+    assert run[1]["path_in_repo"] == "data/full" and run[1]["allow_patterns"] == hub.RUN_FILES
+    assert ratings[1]["path_in_repo"] == "data/prepared" and ratings[1]["allow_patterns"] == hub.RATINGS
+
+
+def test_push_refuses_a_public_repo_and_skips_without_one(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data/full").mkdir(parents=True)
+    api = FakeHub(private=False)
+    with pytest.raises(RuntimeError, match="public"):
+        hub.push({"hub": {"repo": "me/backup"}}, "data/full", api=api)
+    assert [c[0] for c in api.calls] == ["create"]  # nothing uploaded
+    assert hub.push({"hub": {"repo": None}}, "data/full", api=FakeHub()) is False

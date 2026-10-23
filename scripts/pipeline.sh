@@ -14,6 +14,8 @@
 #   BY_SET    1 = run each set through teacher, judge and select before the next (time-boxed runs)  [0]
 #   OUT, REPORT  output directory and report path                       [data/pilot2, reports/pilot2.md]
 # Stop with Ctrl-C: the server is shut down and the next run resumes where this one stopped.
+# After each finished set, `distill push` backs up $OUT to the private Hub repo in config hub.repo (if set).
+# The report covers every set in $OUT, also those finished in an earlier session (a resume may name fewer DATASETS).
 set -euo pipefail
 
 BACKEND=${BACKEND:-vllm}
@@ -102,10 +104,17 @@ select_stage() {
   for f in "${KEPT[@]}"; do distill select "$f" --out "${f%.kept.jsonl}.final.jsonl"; done
 }
 
+backup() {  # a failed upload never stops the run: the data is still in $OUT
+  distill push "$OUT" || echo "warning: the Hub backup failed; the data is still in $OUT" >&2
+}
+
 if [ "$BY_SET" = 1 ]; then  # finish each set completely before the next: a run cut short still leaves final data
-  for s in "${SETS[@]}"; do teacher_stage "$s"; filter_stage "$s"; judge_stage; select_stage; done
+  for s in "${SETS[@]}"; do teacher_stage "$s"; filter_stage "$s"; judge_stage; select_stage; backup; done
 else                        # one teacher phase and one judge phase for everything: fewest model swaps
-  teacher_stage "${SETS[@]}"; filter_stage "${SETS[@]}"; judge_stage; select_stage
+  teacher_stage "${SETS[@]}"; filter_stage "${SETS[@]}"; judge_stage; select_stage; backup
 fi
+for v in $VARIANTS; do  # add the sets finished in earlier sessions
+  for f in "$OUT"/*_"$v".kept.jsonl; do if [ -e "$f" ] && ! has "${ALL_KEPT[*]}" "$f"; then ALL_KEPT+=("$f"); fi; done
+done
 distill analyze "${ALL_KEPT[@]}" --out "$REPORT"
 echo "== done: final data in $OUT/*.final.jsonl, report in $REPORT"

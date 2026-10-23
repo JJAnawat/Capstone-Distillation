@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "lingua-language-detector>=2.0",
     "tokenizers>=0.20",   # the student's tokenizer, for its context budget
+    "huggingface_hub>=0.25",   # `distill push` backups (already installed by datasets)
 ]
 
 [project.optional-dependencies]

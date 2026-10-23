@@ -110,6 +110,11 @@ select:
   order: curriculum        # curriculum (complexity 1 -> 5, shuffled within a level) | random
   seed: 0
 
+# Backup (`distill push`; pipeline.sh runs it after every set): a private Hugging Face dataset repo, null = none.
+# Needs a write token on the machine, e.g. `export HF_TOKEN=...` in .vm_env (HF_HOME there is wiped on logout).
+hub:
+  repo: null
+
 # Order matters: a prompt seen in an earlier dataset is dropped from later ones.
 # hint.min_ratings: the best reference response must meet every threshold to be used in hint mode.
 datasets:

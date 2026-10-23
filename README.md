@@ -84,25 +84,40 @@ tmux new -s bench 'bash scripts/bench.sh 2>&1 | tee -ai logs/bench.log'   # thro
 tmux new -s judge 'bash -c "source scripts/lib.sh && start_server judge && distill judge --validate 300 --thinking on"'
 bash scripts/collect.sh bench data/bench
 
-# Full run with the pilot's winning variant
-tmux new -s full 'VARIANTS=A bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log'
+# Full run with the pilot's winning variant (B). The same command resumes; DATASETS=... skips finished sets.
+tmux new -s full 'BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log'
 ```
 Monitor with `tail -f logs/pilot.log logs/vllm_teacher.log` (tmux: `Ctrl-b d` detaches, `tmux attach -t pilot`
 returns).
 
 **Machine settings** go in `.vm_env` in the repo root. It is untracked, and the scripts source it, because
 `~/.bashrc` is often skipped by tmux and non-interactive shells. Source it yourself for commands typed by hand. On the
-current VM the root disk is nearly full, so the model, dataset and vLLM caches live on the shared filesystem:
+current VM the root disk is nearly full and the shared filesystem is not writable for us, so the model, dataset and
+vLLM caches live in RAM (`/dev/shm`, wiped when the user is fully logged out):
 ```bash
-export HF_HOME=/lambda/nfs/Fusion-SFT/aicookie/hf
-export VLLM_CACHE_ROOT=/lambda/nfs/Fusion-SFT/aicookie/vllm-cache
+export HF_HOME=/dev/shm/aicookie/hf
+export VLLM_CACHE_ROOT=/dev/shm/aicookie/vllm-cache
+export HF_TOKEN=hf_...   # only for Hub backups: a fine-grained token with write access to the backup repo alone
 ```
+
+**Hub backup.** Generated data lives only on the VM, so with `hub.repo` set in `config.yaml` the pipeline runs
+`distill push $OUT` after every finished set. It uploads the run directory and the complexity ratings
+(`data/prepared/*.complexity.jsonl`) to that dataset repo, which must be private (it is created private, and a public
+one is refused). Unchanged files are skipped, and a failed upload only prints a warning. Run it by hand with
+`distill push data/full`. To restore on another machine, `hf download <repo> --repo-type dataset --local-dir .` puts
+the files back at their paths, and every stage resumes from them. The token is a secret: put it in `.vm_env` (never
+committed), not in `config.yaml`.
 
 `scripts/pipeline.sh` does the work:
 1. Starts the teacher server; rates, generates and compresses; stops it.
 2. Filters.
 3. Starts the judge server; validates the judge (once per output directory) and judges; stops it.
-4. Selects and reports.
+4. Selects, backs up to the Hub (if `hub.repo` is set) and reports. The report covers every set in `OUT`, also those
+   finished in an earlier session.
+
+Before starting a server, `start_server` refuses only if our own processes hold the GPU (a server left from an earlier
+run). The GPU can be shared: other users' processes are listed as a note, and vLLM itself refuses to start if the free
+memory is short of `--gpu-memory-utilization`.
 
 Settings come from environment variables: `LIMIT`, `N`, `VARIANTS`, `DATASETS`, `VALIDATE`, `JUDGE_ALL_CLOSED`, `OUT`,
 `REPORT`, `BACKEND`.

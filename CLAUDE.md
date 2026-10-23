@@ -52,6 +52,15 @@ prepare → rate → generate → compress (variant B only) → filter → judge
     stopper fires at 02:50 UTC.
   - The bench is postponed: using its result needs the user's approval mid-run.
   - The sampler is nested, so raising `LIMIT` later only adds prompts.
+  - **Night 1 (2026-10-22 17:52 to 23:34 UTC):** No Robots (2,296 final rows) and HelpSteer2 (2,322) finished.
+    - Each set took about 2h45m: about 2h15m in the teacher phase and 30–40 min judging.
+    - The run then stopped. Another user's app was on the GPU (see Gotchas), and the old start check refused to start
+      a server, so the GPU sat unused until 02:50.
+    - Left: UltraFeedback open and closed, about 3h20m. Resume with `DATASETS=ultrafeedback`; the report still
+      covers every set in `data/full`.
+- **Hub backup:** generated data lives only on the VM. `distill push` copies a run and the complexity ratings to a
+  private Hugging Face dataset repo (`hub.repo`), and the pipeline runs it after every finished set. The token goes
+  in `.vm_env`, never in the config.
 - **Final rows** carry `student_tokens`, measured in the student tokenizer, and a `teacher` group. `reasoning_tokens`
   meant raw thinking, not the rationale, and confused the user, so it is now `teacher.thinking_tokens`.
 - **Closed-ended means a known short answer.**
@@ -112,6 +121,11 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - Launch with `tee -ai`; a plain `tee` dies too and the rest of the log is lost.
   - In copy mode (an attached user scrolling), `tmux send-keys C-c` only leaves copy mode, so timed stoppers send
     `tmux send-keys -X cancel` first.
+- **The GPU is shared** in spite of the "exclusive" window. On night 1 another user (`ubuntu`) ran a web app
+  (uvicorn on port 8010, about 1.7 GB) on it.
+  - `start_server` now refuses only when our own processes hold the GPU, and `stop_server` waits only for ours.
+    vLLM checks the free memory itself: 0.92 of 39.5 GiB still fits beside 1.7 GB.
+  - If someone else's process grows during a run, either side can run out of memory.
 - **VM disk:** the root disk (495 GB) has only ~3–7 GB free; the space belongs to others, not to this project.
   - The shared NFS (`/lambda/nfs/Fusion-SFT`) needs the `fusion` group, which `aicookie` doesn't have.
   - So models, datasets and vLLM caches live in RAM: `HF_HOME=/dev/shm/aicookie/hf` and

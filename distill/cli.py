@@ -1,5 +1,5 @@
 """Command line entry point: distill prepare | serve | wait | rate | generate | compress | filter | judge | select |
-analyze."""
+analyze | push."""
 import argparse
 import os
 import sys
@@ -7,7 +7,7 @@ import sys
 import yaml
 from dotenv import load_dotenv
 
-from distill import compress, data, generate, judge, rate, report, selection, server
+from distill import compress, data, generate, hub, judge, rate, report, selection, server
 
 BACKENDS = ["vllm", "openrouter"]
 ONLY_HELP = "only prompts with (closed) or without (open) a known short answer"
@@ -98,6 +98,10 @@ def run(argv=None):
     s.add_argument("--order", choices=["curriculum", "random"])
     s.add_argument("--min-score", type=int)
 
+    p = sub.add_parser("push", help="back up a run and the ratings to a private Hugging Face dataset repo")
+    p.add_argument("out", help="the run's output directory, e.g. data/full")
+    p.add_argument("--repo", help="dataset repo id (default: config hub.repo)")
+
     args = ap.parse_args(argv)
     with open(args.config, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
@@ -136,6 +140,8 @@ def run(argv=None):
                       thinking=thinking, prompt_version=args.prompt_version)
     elif args.cmd == "select":
         selection.run(cfg, args.file, args.out, order=args.order, min_score=args.min_score)
+    elif args.cmd == "push":
+        hub.push(cfg, args.out, repo=args.repo)
 
 
 if __name__ == "__main__":
