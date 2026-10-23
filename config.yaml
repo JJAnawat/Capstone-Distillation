@@ -22,6 +22,10 @@ teacher:
     serve_args:
       - --reasoning-parser=qwen3
       - --language-model-only            # text only: skip the vision encoder
+      # Qwen3.5's multi-token-prediction head drafts 2 tokens a step (vLLM resolves "mtp" to qwen3_5_mtp). The bench
+      # (2026-10-23, 800 samples) measured 1.12x the pilot's tok/s, with acceptance length ~2.35 of 3 and no quality
+      # change: drafts are verified against the model's own distribution.
+      - '--speculative-config={"method": "mtp", "num_speculative_tokens": 2}'
       - --max-model-len=65536
       - --gpu-memory-utilization=0.92
       - --max-num-seqs=256
