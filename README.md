@@ -105,7 +105,10 @@ export HF_TOKEN=hf_...   # only for Hub backups: a fine-grained token with write
 (`data/prepared/*.complexity.jsonl`) to that dataset repo, which must be private (it is created private, and a public
 one is refused). Unchanged files are skipped, and a failed upload only prints a warning. Run it by hand with
 `distill push data/full`. To restore on another machine, `hf download <repo> --repo-type dataset --local-dir .` puts
-the files back at their paths, and every stage resumes from them. The token is a secret: put it in `.vm_env` (never
+the files back at their paths, and every stage resumes from them. Each push also rewrites the repo's dataset card
+(`README.md`, from `docs/dataset_card.md`). It names one subset per file stage (`final`, `judge`, `samples`,
+`rejected`, `ratings`) with one split per set, plus a status table and an example per set. Closed sets get their own
+subsets (`final_closed`, ...), because their extra `gold` column cannot share a schema with open rows. The token is a secret: put it in `.vm_env` (never
 committed), not in `config.yaml`.
 
 `scripts/pipeline.sh` does the work:

@@ -66,6 +66,11 @@ prepare → rate → generate → compress (variant B only) → filter → judge
     own tokens.
   - The VM's token is fine-grained. The user pastes tokens into the chat, so suggest putting future ones on the VM
     directly.
+  - `push` also writes the dataset card from `docs/dataset_card.md`. It has a subset per stage and a split per set,
+    and closed sets get their own subsets (`gold` broke a shared schema: `CastError`). All 9 subsets were
+    load-tested on 2026-10-23.
+  - The Hub's table viewer doesn't work here: it needs PRO or an Enterprise org for private datasets. Readers use
+    the card and `load_dataset(repo, "final", split="no_robots")`.
   - It stays private until a deliberate release: the final rows with a dataset card, once the company-hardware and
     Qwen terms questions in docs/LICENSES.md are settled.
 - **Final rows** carry `student_tokens`, measured in the student tokenizer, and a `teacher` group. `reasoning_tokens`
