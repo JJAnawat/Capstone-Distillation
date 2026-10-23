@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Teacher throughput under different server settings, on the pilot's no_robots prompts (LIMIT prompts x N samples,
-# variant B: thinking on). The pilot itself is the baseline: base server at concurrency 256, same prompts and seeds.
+# Teacher throughput with MTP speculative decoding, against the pilot on its no_robots prompts (LIMIT prompts x N
+# samples, variant B: thinking on). The pilot is the baseline: base server at concurrency 256, same prompts and seeds.
 # Run on the GPU VM inside tmux:
 #   tmux new -s bench 'bash scripts/bench.sh 2>&1 | tee -ai logs/bench.log'
 # Writes data/bench/<setting>_B_raw.jsonl and the comparison table reports/bench.md. A setting whose server does not
@@ -21,9 +21,10 @@ run() {  # SETTING EXTRA_VLLM_ARGS CONCURRENCY. Called in a || list, where set -
   stop_server
 }
 skipped() { echo "== $1 skipped: its server or run failed (see logs/vllm_teacher.log)" >&2; }
-run base_c128 "" 128 || skipped base_c128
-run async_c256 "--async-scheduling" 256 || skipped async_c256
-# vLLM maps "mtp" to the model's own multi-token-prediction head (qwen3_5_mtp for Qwen3.5).
+# Only MTP speculative decoding is measured (about 16 min). vLLM 0.32 already turns async scheduling on by default
+# (VllmConfig: "enable async scheduling unless there is an incompatible option"), so the pilot had it. Concurrency 128
+# can't beat 256: at 256 the KV cache is already full and requests wait. vLLM maps "mtp" to the model's own
+# multi-token-prediction head (qwen3_5_mtp for Qwen3.5); the table shows whether that offsets losing async scheduling.
 run mtp_c256 "--speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":2}'" 256 || skipped mtp_c256
 
 python - "$OUT" "$PILOT_OUT" <<'EOF' | tee reports/bench.md

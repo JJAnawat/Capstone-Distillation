@@ -134,9 +134,11 @@ Settings come from environment variables: `LIMIT`, `N`, `VARIANTS`, `DATASETS`, 
   completed.
 - `run_pilot.sh` sets `JUDGE_ALL_CLOSED=1`: rule-failing closed samples are judged too, so the report can show how well
   the judge separates right from wrong answers.
-- `scripts/bench.sh` reruns the pilot's no_robots generation (variant B, N=8, 100 prompts) under other server
-  settings: concurrency 128, `--async-scheduling`, and MTP speculative decoding (`"method": "mtp"`, passed through
-  `DISTILL_SERVE_ARGS`). It tabulates tok/s and the speed-up against the pilot. A setting that fails is skipped.
+- `scripts/bench.sh` reruns the pilot's no_robots generation (variant B, N=8, 100 prompts) with MTP speculative
+  decoding (`"method": "mtp"`, passed through `DISTILL_SERVE_ARGS`; about 16 min). It tabulates tok/s and the speed-up
+  against the pilot.
+  - Async scheduling is already on by default in vLLM 0.32, so it isn't tested.
+  - Concurrency 128 can't beat 256, which already fills the KV cache.
 - A laptop smoke test through OpenRouter is also available: `bash scripts/smoke_openrouter.sh` (Git Bash; costs cents).
 
 Single stages, for example by hand on the VM:

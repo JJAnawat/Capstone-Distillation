@@ -188,10 +188,10 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 - **Full run, night 1** (details under Key decisions): No Robots and HelpSteer2 are done.
   - Their final rows are in `data/full` on the VM, on the Hub, and on the laptop in `data/vm/full_night1/`.
   - Report for these two sets: `data/vm/full_night1/reports/full.md`.
-- **Next GPU session** (about 9 h; it starts only when the user has allocated the GPU and says go):
+- **Next GPU session** (about 8.5 h; it starts only when the user has allocated the GPU and says go):
   1. Re-download the models into `/dev/shm`, which is wiped at logout. Check the GPU for other users, and ask when the
      window ends.
-  2. Bench (about 50 min):
+  2. Bench, MTP only (about 16 min). Async scheduling is already on by default, and concurrency 128 can't win:
      `tmux new -d -s bench "bash scripts/bench.sh 2>&1 | tee -ai logs/bench.log"`
      Report `reports/bench.md`, then **wait for the user's decision** before putting a setting into
      `teacher.vllm.serve_args` or the concurrency (commit, push, pull).
