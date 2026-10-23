@@ -55,7 +55,39 @@ def _ultrafeedback(ds, cfg):
                "gold": gold}
 
 
-LOADERS = {"no_robots": _no_robots, "helpsteer2": _helpsteer2, "ultrafeedback": _ultrafeedback}
+def _json_objects(text):
+    """Every JSON object in `text`, back to back (two LogiQA mirror rows hold two)."""
+    dec, text, pos = json.JSONDecoder(), text.strip(), 0
+    while pos < len(text):
+        obj, pos = dec.raw_decode(text, pos)
+        yield obj
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+
+
+def _logiqa(ds, cfg):
+    # The datatune/LogiQA2.0 mirror stores each row as a JSON string in `text`. It mixes English and Chinese
+    # multiple-choice rows with NLI rows; only the 12,567 English multiple-choice rows have both `options` and `type`.
+    for j in (j for r in ds for j in _json_objects(r[cfg["input_field"]])):
+        if "options" not in j or "type" not in j:
+            continue
+        letters = "ABCDEFGH"[:len(j["options"])]
+        options = "\n".join(f"{k}. {o.strip()}" for k, o in zip(letters, j["options"]))
+        prompt = (f"{j['text'].strip()}\n\n{j['question'].strip()}\n\n{options}\n\n"
+                  "Answer with the letter of the correct option.")
+        k, option = letters[j["answer"]], j["options"][j["answer"]].strip()  # `answer` is a 0-based index
+        yield {"input": prompt, "strata": next((t for t, on in j["type"].items() if on), None), "multi_turn": False,
+               "reference": None, "ratings": {}, "gold": [k, f"{k}. {option}", option]}
+
+
+LOADERS = {"no_robots": _no_robots, "helpsteer2": _helpsteer2, "ultrafeedback": _ultrafeedback, "logiqa": _logiqa}
+
+
+def exact_gold(cfg):
+    """Datasets whose gold answers are exact (`exact_gold: true`, e.g. LogiQA's option letter). There, a closed prompt
+    with no correct sample is dropped rather than judged: the judge could only pick among wrong answers. Other closed
+    prompts fall back to the judge, since a noisy gold may be right without matching exactly."""
+    return {name for name, d in cfg["datasets"].items() if d.get("exact_gold")}
 
 
 def is_closed(r, vcfg):
@@ -64,13 +96,26 @@ def is_closed(r, vcfg):
             and all(len(a.split()) <= vcfg["max_gold_words"] for a in r["gold"]))
 
 
-def prepare(cfg):
-    """Load every dataset in config order, dedupe within and across them, write data/prepared/*.jsonl."""
+def prepare(cfg, only=None):
+    """Load every dataset in config order, dedupe within and across them, write data/prepared/<name>.jsonl. With
+    `only`, build just that dataset: the earlier datasets' prepared files supply the ids to dedupe against and stay
+    as they are, so their samples (and runs in progress) do not change. Meant for a dataset added at the end.
+    A dataset with `closed: true` in its config is closed wherever it has gold answers."""
     from datasets import load_dataset
 
+    names = list(cfg["datasets"])
+    if only and only not in names:
+        raise ValueError(f"unknown dataset {only}; config has {names}")
     PREPARED_DIR.mkdir(parents=True, exist_ok=True)
-    seen, stats = set(), {}
+    stats_path = PREPARED_DIR / "stats.json"
+    seen = set()
+    stats = json.loads(stats_path.read_text(encoding="utf-8")) if only and stats_path.exists() else {}
     for name, dcfg in cfg["datasets"].items():
+        if only and name != only:
+            if names.index(name) < names.index(only):
+                with open(PREPARED_DIR / f"{name}.jsonl", encoding="utf-8") as f:
+                    seen.update(json.loads(line)["id"] for line in f)
+            continue
         ds = load_dataset(dcfg["hf_id"], split=dcfg["split"])
         thresholds = dcfg.get("hint", {}).get("min_ratings", {})
         st = {"raw_rows": len(ds), "empty": 0, "multi_turn": 0, "duplicate": 0, "kept": 0, "hint_eligible": 0,
@@ -90,14 +135,14 @@ def prepare(cfg):
                 seen.add(rid)
                 r["id"], r["source_dataset"] = rid, name
                 r["hint_ok"] = all(r["ratings"].get(k, 0) >= v for k, v in thresholds.items())
-                r["closed"] = is_closed(r, cfg["verify"])
+                r["closed"] = bool(r["gold"]) if dcfg.get("closed") else is_closed(r, cfg["verify"])
                 st["kept"] += 1
                 st["hint_eligible"] += r["hint_ok"]
                 st["closed"] += r["closed"]
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
         stats[name] = st
         print(f"[prepare] {name}: {st}")
-    (PREPARED_DIR / "stats.json").write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
 
 
 def load_prompts(cfg, name):
@@ -111,6 +156,12 @@ def load_prompts(cfg, name):
         for r in rows:
             r.update(gold=[], closed=False)
     return rows
+
+
+def subsets(cfg, name):
+    """Which kinds of prompts the dataset has, `open` and/or `closed`; pipeline.sh makes a set of each."""
+    kinds = {bool(r.get("closed")) for r in load_prompts(cfg, name)}
+    return [s for s, closed in (("open", False), ("closed", True)) if closed in kinds]
 
 
 def complexity_path(dataset):

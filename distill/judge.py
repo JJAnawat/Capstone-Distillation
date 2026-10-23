@@ -33,10 +33,11 @@ def judge_config(cfg, thinking=None, prompt_version=None):
     return jc
 
 
-def candidates(rows, all_samples=False):
+def candidates(rows, all_samples=False, exact=()):
     """Samples worth judging: all samples of an open prompt; for a closed prompt only those whose final answer passes
-    the rule check, or all of them when none passes (the gold may be right without being exactly matchable).
-    `all_samples` judges every sample, to measure how well the judge separates right from wrong answers."""
+    the rule check, or all of them when none passes (the gold may be right without being exactly matchable), unless
+    its dataset is in `exact` (`data.exact_gold`). `all_samples` judges every sample, to measure how well the judge
+    separates right from wrong answers."""
     if all_samples:
         return list(rows)
     groups = defaultdict(list)
@@ -45,7 +46,8 @@ def candidates(rows, all_samples=False):
     out = []
     for group in groups.values():
         passing = [r for r in group if r.get("closed") and verify.is_correct(r["answer"], r.get("gold") or [])]
-        out += passing or group
+        exact_closed = group[0].get("closed") and group[0].get("source_dataset") in exact
+        out += passing or ([] if exact_closed else group)
     return out
 
 
@@ -115,7 +117,8 @@ def run(cfg, files, concurrency=None, backend=None, client=None, all_samples=Fal
             prompts[ds] = {p["id"]: p for p in data.load_prompts(cfg, ds)}
         out = judge_path(path)
         done = read_done_keys(out)
-        todo = [r for r in candidates(rows, all_samples) if (r["id"], r.get("sample_idx", 0)) not in done]
+        todo = [r for r in candidates(rows, all_samples, data.exact_gold(cfg))
+                if (r["id"], r.get("sample_idx", 0)) not in done]
         print(f"[judge] {path}: {len(done)} already judged, {len(todo)} to run")
         if not todo:
             continue

@@ -3,7 +3,7 @@
 Teacher data for turning [wongwian-micro-instruct](https://huggingface.co/wongwian-org/wongwian-micro-instruct)
 (272M parameters, Thai, 2,048-token context) into a small reasoning model.
 
-- **Prompts:** from No Robots, HelpSteer2 and UltraFeedback.
+- **Prompts:** from No Robots, HelpSteer2, UltraFeedback and LogiQA 2.0 (logic puzzles with four options).
 - **Teacher:** Qwen3.5-9B answered each prompt with thinking on. Its thinking was then rewritten into a few
   short reasoning steps.
 - **Judge:** Gemma 4 31B scored every sample.
@@ -32,7 +32,7 @@ final = load_dataset("<!-- repo -->", "final", split="no_robots")
 | field | meaning |
 |---|---|
 | `input`, `rationale`, `answer` | **The training sample:** the prompt, the reasoning steps (separated by a blank line), then the answer. |
-| `id`, `sample_idx`, `source_dataset` | Which prompt, and which of its samples. Keep `source_dataset`: No Robots rows are non-commercial. |
+| `id`, `sample_idx`, `source_dataset` | Which prompt, and which of its samples. Keep `source_dataset`: No Robots and LogiQA rows are non-commercial. |
 | `closed`, `gold` | Whether the prompt has a known short answer, and that answer (closed prompts only). |
 | `complexity`, `max_steps`, `n_steps` | Reasoning complexity 1–5 (the curriculum order), the step limit it set, and the steps actually written. |
 | `student_tokens` | Lengths in the **student's** tokenizer. `total` includes 32 chat-template tokens and stays ≤ 2,048. |
@@ -48,7 +48,8 @@ Rows are ordered from easy to hard: complexity 1 first, shuffled within each lev
 3. **Compress:** the thinking is rewritten into at most 4, 5, 6, 8 or 10 steps for levels 1 to 5.
 4. **Filter:** drops wrong-language, repetitive, unfinished and over-length samples. Every row must fit the student's
    2,048-token context.
-5. **Judge:** Gemma scores each sample from 1 to 9. For closed prompts, rules check the answer first.
+5. **Judge:** Gemma scores each sample from 1 to 9. For closed prompts, rules check the answer first: UltraFeedback's
+   known short answers, or LogiQA's option letter.
 6. **Select:** an open prompt keeps its best sample if it scores at least 7. A closed prompt keeps up to 3 distinct
    correct samples.
 
@@ -75,6 +76,7 @@ place, and the pipeline resumes from them. For each set, in `data/full/`:
 | No Robots | CC BY-NC 4.0 | Rows with `source_dataset` `no_robots`, and anything trained on them, are **non-commercial only**. Attribution required. |
 | HelpSteer2 | CC BY 4.0 | Attribution required. |
 | UltraFeedback | MIT | Keep the notice. Its prompts come from upstream sources with their own terms. |
+| LogiQA 2.0 | CC BY-NC-SA 4.0 | Rows with `source_dataset` `logiqa` are **non-commercial**. Anything shared that derives from them must carry the same license. Attribution required. |
 | Qwen3.5-9B (teacher) | Apache-2.0 | The terms for training on its outputs are still to be confirmed. |
 | Gemma 4 31B (judge) | Apache-2.0 | Only its scores and critiques are used. |
 

@@ -1,7 +1,9 @@
 """Offline tests: response parsing, request bodies, filters, resume, dedup and sampling. No network."""
 import json
+import sys
 import threading
 import time
+import types
 
 import httpx
 import pytest
@@ -270,6 +272,46 @@ def test_select_rows_only_closed_and_same_subset(monkeypatch):
     assert [r["id"] for r in data.select_rows(CFG, "x", only="closed")] == ["p0", "p2"]
     assert [r["id"] for r in data.select_rows(CFG, "x", only="open")] == ["p1", "p3"]
     assert data.select_rows(CFG, "x", limit=2, seed=3) == data.select_rows(CFG, "x", limit=2, seed=3)
+    monkeypatch.setattr(data, "load_prompts", lambda cfg, name: [r for r in rows if r["closed"]])
+    assert data.subsets(CFG, "x") == ["closed"]  # pipeline.sh then makes no empty open set
+    monkeypatch.setattr(data, "load_prompts", lambda cfg, name: rows)
+    assert data.subsets(CFG, "x") == ["open", "closed"]
+
+
+def logiqa_row(premise="All cats purr. Tom is a cat.", answer=1):
+    return {"text": json.dumps({"id": 1, "answer": answer, "text": premise, "question": "What follows?",
+                                "options": ["Tom barks.", " Tom purrs. ", "Tom flies.", "Nothing."],
+                                "type": {"Conjunctive Reasoning": False, "Categorical Reasoning": True}})}
+
+
+def test_logiqa_keeps_english_multiple_choice_rows_with_letter_golds():
+    zh = {"text": json.dumps({"example_id": 2, "answer": 0, "text": "所有猫", "question": "?", "options": ["A.x"]})}
+    nli = {"text": json.dumps({"id": 3, "premise": "P", "hypothesis": "H", "label": "entailment", "type": {}})}
+    two = {"text": nli["text"] + logiqa_row()["text"]}  # two mirror rows hold two objects back to back
+    (row, again) = data._logiqa([zh, logiqa_row(), nli, two], CFG["datasets"]["logiqa"])
+    assert again == row
+    assert row["input"].endswith("A. Tom barks.\nB. Tom purrs.\nC. Tom flies.\nD. Nothing.\n\n"
+                                 "Answer with the letter of the correct option.")
+    assert row["gold"] == ["B", "B. Tom purrs.", "Tom purrs."] and row["strata"] == "Categorical Reasoning"
+
+
+def test_prepare_one_dataset_leaves_earlier_ones_alone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    cfg = {"datasets": {k: CFG["datasets"][k] for k in ("no_robots", "logiqa")}, "verify": CFG["verify"]}
+    dup = logiqa_row(premise="Seen before.")
+    (dup_prompt,) = data._logiqa([dup], cfg["datasets"]["logiqa"])
+    data.PREPARED_DIR.mkdir(parents=True)
+    earlier = json.dumps({"id": data.make_id(dup_prompt["input"]), "input": dup_prompt["input"]}) + "\n"
+    (data.PREPARED_DIR / "no_robots.jsonl").write_text(earlier, encoding="utf-8")
+    (data.PREPARED_DIR / "stats.json").write_text(json.dumps({"no_robots": {"kept": 1}}), encoding="utf-8")
+    fake = types.SimpleNamespace(load_dataset=lambda hf_id, split: [dup, logiqa_row()])
+    monkeypatch.setitem(sys.modules, "datasets", fake)
+    data.prepare(cfg, only="logiqa")
+    assert (data.PREPARED_DIR / "no_robots.jsonl").read_text(encoding="utf-8") == earlier  # untouched
+    (row,) = [json.loads(line) for line in open(data.PREPARED_DIR / "logiqa.jsonl", encoding="utf-8")]
+    assert row["closed"] and row["gold"][0] == "B" and row["source_dataset"] == "logiqa"  # the duplicate is gone
+    stats = json.loads((data.PREPARED_DIR / "stats.json").read_text(encoding="utf-8"))
+    assert stats["no_robots"] == {"kept": 1} and stats["logiqa"]["duplicate"] == 1
 
 
 # ---------------------------------------------------------------- generate: samples, resume, templates, hint isolation

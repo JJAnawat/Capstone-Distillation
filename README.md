@@ -86,6 +86,9 @@ bash scripts/collect.sh bench data/bench
 
 # Full run with the pilot's winning variant (B). The same command resumes; DATASETS=... skips finished sets.
 tmux new -s full 'BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log'
+# LogiQA (closed only) runs on its own, so LIMIT_CLOSED=500 stays UltraFeedback's. Prepare it once first:
+distill prepare --dataset logiqa
+tmux new -s logiqa 'DATASETS=logiqa BY_SET=1 LIMIT=2500 LIMIT_CLOSED=2500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log'
 ```
 Monitor with `tail -f logs/pilot.log logs/vllm_teacher.log` (tmux: `Ctrl-b d` detaches, `tmux attach -t pilot`
 returns).
@@ -131,9 +134,9 @@ Settings come from environment variables: `LIMIT`, `N`, `VARIANTS`, `DATASETS`, 
   completed.
 - `run_pilot.sh` sets `JUDGE_ALL_CLOSED=1`: rule-failing closed samples are judged too, so the report can show how well
   the judge separates right from wrong answers.
-- `scripts/bench.sh` reruns the pilot's no_robots generation under other server settings: concurrency 128,
-  `--async-scheduling`, and MTP speculative decoding (passed through `DISTILL_SERVE_ARGS`). It tabulates tok/s against
-  the pilot.
+- `scripts/bench.sh` reruns the pilot's no_robots generation (variant B, N=8, 100 prompts) under other server
+  settings: concurrency 128, `--async-scheduling`, and MTP speculative decoding (`"method": "mtp"`, passed through
+  `DISTILL_SERVE_ARGS`). It tabulates tok/s and the speed-up against the pilot. A setting that fails is skipped.
 - A laptop smoke test through OpenRouter is also available: `bash scripts/smoke_openrouter.sh` (Git Bash; costs cents).
 
 Single stages, for example by hand on the VM:
@@ -163,6 +166,12 @@ Requests that fail after all retries go to `<out>.errors.jsonl` and are retried 
 
 ## Data preparation
 - **Prompt as the only input.** The input is `prompt` (No Robots, HelpSteer2) or `instruction` (UltraFeedback).
+  LogiQA 2.0 (`datatune/LogiQA2.0`) stores each row as a JSON string in `text`. Only its 12,567 English
+  multiple-choice rows are used (the mirror also holds Chinese and NLI rows). The prompt is the premise, the question,
+  options `A.`–`D.`, then "Answer with the letter of the correct option."
+- **Adding a dataset later:** put it last in `config.yaml` and run `distill prepare --dataset NAME`. That builds only
+  this dataset, deduped against the earlier datasets' prepared files, and leaves those files and their samples
+  untouched. `distill subsets NAME` prints which sets it has (`open`, `closed`), and `pipeline.sh` makes one of each.
 - **Dedup.** The ID is `sha256(normalize(prompt))[:16]`, where normalize means NFKC, collapsed whitespace and casefold.
   Duplicates are removed within each dataset and across datasets, in config order.
 - **Multi-turn rows are excluded:** No Robots "Chat" rows (their `prompt` is a system persona) and HelpSteer2 prompts
@@ -171,6 +180,12 @@ Requests that fail after all retries go to `<out>.errors.jsonl` and are retried 
 - **Closed-ended prompts** have short gold answers (≤4 words) from flan_v2_niv2, flan_v2_p3 or flan_v2_flan2021
   (10,603 prompts). They are rule-checked. truthful_qa golds such as "I have no comment" aren't exact-matchable, so
   those prompts go to the judge with the gold as its reference.
+  - A dataset with `closed: true` (LogiQA) is closed wherever it has golds. LogiQA's are the letter, the letter with
+    its option, and the option text.
+  - If no sample of a closed prompt passes the rule check, its samples go to the judge, since a noisy gold may be
+    right without matching exactly.
+  - With `exact_gold: true` (LogiQA), such a prompt is dropped instead: its gold is exact, so the judge could only
+    choose among wrong answers.
 - **Reference** (used by the judge, in hint mode, or with `--include-reference`): No Robots uses the human answer,
   HelpSteer2 its best-rated response, UltraFeedback the completion with the highest `fine-grained_score`.
 - **Hint eligibility** is set by `hint.min_ratings`: all No Robots rows; HelpSteer2 helpfulness, correctness and

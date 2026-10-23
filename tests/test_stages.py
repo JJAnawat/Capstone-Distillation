@@ -82,6 +82,18 @@ def test_is_correct(answer, gold, ok):
     assert verify.is_correct(answer, gold) is ok
 
 
+LOGIQA_GOLD = ["B", "B. Tom purrs.", "Tom purrs."]  # data._logiqa: letter, letter and option, option
+
+
+@pytest.mark.parametrize("final, ok", [
+    ("B", True), ("**B**", True), ("(B)", True), ("B. Tom purrs.", True), ("Tom purrs.", True),
+    ("C", False), ("A", False), ("C. Tom flies.", False),
+])
+def test_is_correct_option_letters(final, ok):
+    assert verify.is_correct(f"Reasoning.\nFinal answer: {final}", LOGIQA_GOLD) is ok
+    assert verify.is_correct("Final answer: A", ["A", "A. The cat.", "The cat."])  # "A" is not dropped as an article
+
+
 def test_extract_boxed_takes_the_last_with_nested_braces():
     assert verify.extract_boxed("\\boxed{a} then \\boxed{\\frac{1}{2}}") == "\\frac{1}{2}"
     assert verify.extract_boxed("no box") is None
@@ -263,6 +275,19 @@ def test_select_keeps_best_open_and_distinct_correct_closed(tmp_path, monkeypatc
     assert stats["kept: judge"] == 1 and stats["kept: rule+judge"] == 1
 
 
+def test_exact_gold_prompt_without_a_correct_sample_is_neither_judged_nor_kept(tmp_path, monkeypatch):
+    rows = [gen_row(3, sample_idx=k, source_dataset="logiqa", closed=True, gold=["B"], answer=f"Final answer: {a}")
+            for k, a in enumerate("AC")]                                                       # both letters wrong
+    rows.append(gen_row(4, source_dataset="logiqa", closed=True, gold=["B"], answer="Final answer: B"))
+    assert {r["id"] for r in judge.candidates(rows, exact={"logiqa"})} == {"p4"}
+    assert {r["id"] for r in judge.candidates(rows)} == {"p3", "p4"}                           # noisy-gold fallback
+    monkeypatch.setattr(selection, "load_complexity", lambda ds: {})
+    scores = {("p3", 0): (9, 9.0), ("p3", 1): (9, 9.0), ("p4", 0): (8, 8.0)}                  # a judge fooled by p3
+    stats = selection.run(CFG, write_judged(tmp_path, rows, scores), tmp_path / "f.jsonl", count=lambda t: len(t))
+    assert [r["id"] for r in report.read_jsonl(tmp_path / "f.jsonl")] == ["p4"]
+    assert stats["dropped: no correct answer"] == 1 and stats["kept: rule+judge"] == 1
+
+
 def test_final_rows_have_student_tokens_and_a_teacher_group(tmp_path, monkeypatch):
     monkeypatch.setattr(selection, "load_complexity", lambda ds: {"p0": 2})
     row = gen_row(0, rationale="1. One.\n\n2. Two.", answer="The answer.", reasoning="Long raw thinking.",
@@ -367,7 +392,8 @@ def test_card_names_a_subset_per_stage_and_a_split_per_set(tmp_path, monkeypatch
     report.write_jsonl(run / "no_robots_open_B.final.jsonl", final)
     for name in ("no_robots_open_B.jsonl", "no_robots_open_B_raw.jsonl", "no_robots_open_B.kept.jsonl",
                  "no_robots_open_B.kept.judge.jsonl", "ultrafeedback_closed_B_raw.jsonl",
-                 "ultrafeedback_closed_B.kept.judge.jsonl", "no_robots_open_B.jsonl.runs.jsonl"):
+                 "ultrafeedback_closed_B.kept.judge.jsonl", "logiqa_closed_B.kept.judge.jsonl",
+                 "no_robots_open_B.jsonl.runs.jsonl"):
         (run / name).write_text("{}\n{}\n")
     (prepared / "no_robots.complexity.jsonl").write_text("{}\n")
     text = hub.card("data/full", "org/data")
@@ -376,7 +402,8 @@ def test_card_names_a_subset_per_stage_and_a_split_per_set(tmp_path, monkeypatch
     # No rejected file yet; raw and kept files are left out. Closed rows carry `gold`, so they get their own subsets.
     assert list(subsets) == ["final", "judge", "judge_closed", "samples", "ratings"]
     assert subsets["final"] == [("no_robots", "data/full/no_robots_open_B.final.jsonl")]
-    assert subsets["judge_closed"] == [("ultrafeedback", "data/full/ultrafeedback_closed_B.kept.judge.jsonl")]
+    assert subsets["judge_closed"] == [("logiqa", "data/full/logiqa_closed_B.kept.judge.jsonl"),
+                                       ("ultrafeedback", "data/full/ultrafeedback_closed_B.kept.judge.jsonl")]
     assert subsets["samples"] == [("no_robots", "data/full/no_robots_open_B.jsonl")]
     assert subsets["ratings"] == [("no_robots", "data/prepared/no_robots.complexity.jsonl")]
     assert "| ultrafeedback (closed) | 2 | — | in progress | — |" in text  # generating: only the raw file so far

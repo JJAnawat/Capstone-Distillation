@@ -143,6 +143,14 @@ datasets:
     input_field: instruction
     stratify_by: source
     hint: {min_ratings: {fine_grained_score: 5.0, overall_score: 8}}
+  logiqa:                              # non-math logical reasoning; added after night 1, so it stays last
+    hf_id: datatune/LogiQA2.0          # LogiQA 2.0 is CC BY-NC-SA 4.0 upstream (the mirror's MIT tag is wrong)
+    split: train
+    input_field: text                  # a JSON string per row; English multiple-choice rows only (data._logiqa)
+    stratify_by: type                  # the first reasoning type it flags, e.g. Categorical Reasoning
+    closed: true                       # every prompt has a known answer: the option letter
+    exact_gold: true                   # the letter is exact: a prompt with no correct sample is dropped, not judged
+    hint: {min_ratings: {}}
 
 filter:
   repetition: {n: 8, max_ratio: 0.3, min_ngrams: 50}

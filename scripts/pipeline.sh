@@ -4,10 +4,10 @@
 # Settings come from the environment (the run_*.sh wrappers set them):
 #   BACKEND   vllm (start/stop local servers; GPU VM) | openrouter (laptop smoke test)   [vllm]
 #   LIMIT     prompts per dataset and subset, 0 = all                                      [100]
-#   LIMIT_CLOSED  prompts in the UltraFeedback closed set (noisy known answers)          [LIMIT]
+#   LIMIT_CLOSED  prompts in each closed set, e.g. 500 for UltraFeedback's noisy one     [LIMIT]
 #   N         samples per prompt for every prompt; empty = by complexity (config)      [config]
 #   VARIANTS  "A B": A = thinking off + <reasoning> tags, B = thinking on + compress      ["A B"]
-#   DATASETS  datasets to run                                     ["no_robots helpsteer2 ultrafeedback"]
+#   DATASETS  datasets to run; logiqa runs on its own (LIMIT_CLOSED)  ["no_robots helpsteer2 ultrafeedback"]
 #   VALIDATE  HelpSteer2 pairs for judge validation (once per OUT), 0 = skip              [300]
 #   JUDGE_ALL_CLOSED  1 = judge rule-failing closed samples too (judge-vs-rules check)     [0]
 #   VALIDATE_PROMPTS  judge rubric versions to validate, e.g. "v1 v2"            [config version]
@@ -42,10 +42,13 @@ start() { if [ "$BACKEND" = vllm ]; then start_server "$1"; fi; }  # OpenRouter 
 stop() { stop_server; }
 has() { [[ " $1 " == *" $2 "* ]]; }
 
-# Each set is dataset:subset. UltraFeedback's closed (known-answer) prompts form their own set.
+# Each set is dataset:subset, one per kind of prompt the dataset has: open, and closed (a known answer). UltraFeedback
+# has both, LogiQA only closed. The assignment (not a for list) lets set -e stop on a failure.
 SETS=()
-for ds in $DATASETS; do SETS+=("$ds:open"); done
-if has "$DATASETS" ultrafeedback; then SETS+=("ultrafeedback:closed"); fi
+for ds in $DATASETS; do
+  subs=$(distill subsets "$ds" | tail -n 1)
+  for sub in $subs; do SETS+=("$ds:$sub"); done
+done
 
 teacher_stage() {  # SET...: rate, generate and compress with one teacher server
   echo "== teacher phase ($BACKEND): $*"

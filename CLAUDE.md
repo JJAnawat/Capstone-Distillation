@@ -84,6 +84,15 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - Rules decide correctness, and the judge still ranks the reasoning of the correct samples, because a yes/no or
     multiple-choice answer can be right with wrong reasoning.
   - truthful_qa isn't rule-checked: its short golds are answers like "I have no comment".
+- **LogiQA 2.0 was added for non-math logical reasoning** (user's choice, 2026-10-23).
+  - Source: `datatune/LogiQA2.0`. After dedupe it has 11,678 English multiple-choice prompts, all closed; the run
+    takes 2,500.
+  - **License:** CC BY-NC-SA 4.0 upstream, so non-commercial and share-alike. The mirror's MIT tag is wrong.
+  - **`exact_gold: true`:** a prompt with no correct letter is dropped, not judged. The noisy-gold judge fallback
+    would admit wrong answers, and the pilot's judge accepted 63–74% of wrong closed answers.
+  - It runs as its own invocation (`DATASETS=logiqa LIMIT_CLOSED=2500`), so `LIMIT_CLOSED=500` stays UltraFeedback's.
+  - Its reasoning types are uneven: Categorical 7,291, Sufficient Conditional 4,176, the others under 100 each. The
+    equal-allocation sampler takes every prompt of the rare types.
 - **Selection:** open prompts keep their best sample (judge score ≥ 7 of 9). Closed prompts keep up to 3 distinct
   correct samples, since several rationales per question help small students (SCoTD).
 - **Sampling:** the Qwen3.5 model card's "general" profiles (thinking on 1.0/0.95/20, off 0.7/0.8/20, presence 1.5),
@@ -174,16 +183,20 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 - **Full run, night 1** (details under Key decisions): No Robots and HelpSteer2 are done.
   - Their final rows are in `data/full` on the VM, on the Hub, and on the laptop in `data/vm/full_night1/`.
   - Report for these two sets: `data/vm/full_night1/reports/full.md`.
-- **Next GPU session:**
-  1. `git pull`, then re-download the models into `/dev/shm`, which is wiped at logout.
-  2. Resume (about 3h20m):
-     `tmux new -d -s full "DATASETS=ultrafeedback BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log"`
-  3. If the window ends first, add a stopper. Set S to the seconds until 10 min before the end:
+- **Next GPU session** (about 9 h; it starts only when the user has allocated the GPU and says go):
+  1. Re-download the models into `/dev/shm`, which is wiped at logout. Check the GPU for other users, and ask when the
+     window ends.
+  2. Bench (about 50 min):
+     `tmux new -d -s bench "bash scripts/bench.sh 2>&1 | tee -ai logs/bench.log"`
+     Report `reports/bench.md`, then **wait for the user's decision** before putting a setting into
+     `teacher.vllm.serve_args` or the concurrency (commit, push, pull).
+  3. Run UltraFeedback (about 3h40m), then LogiQA (about 4–4.5 h):
+     `tmux new -d -s full "(DATASETS=ultrafeedback BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh && DATASETS=logiqa BY_SET=1 LIMIT=2500 LIMIT_CLOSED=2500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh) 2>&1 | tee -ai logs/full.log"`
+  4. If the window ends first, add a stopper. Set S to the seconds until 10 min before the end:
      `tmux new -d -s stopper "sleep $S; tmux send-keys -t full -X cancel 2>/dev/null; tmux send-keys -t full C-c"`
-  4. Afterwards, the report covers all four sets. Review it and some samples with the user, and copy the data to
+  5. Afterwards, the report covers all five sets. Review it and some samples with the user, and copy the data to
      the laptop.
 - **Open, later:**
-  - the bench (`bench.sh`);
   - judge validation with thinking on;
   - the closed-gold audit;
   - Thai translation (undecided);

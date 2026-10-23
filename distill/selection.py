@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from distill import verify
-from distill.data import load_complexity
+from distill.data import exact_gold, load_complexity
 from distill.report import STUDENT_TEMPLATE_TOKENS, iter_jsonl, judge_path, student_counter, write_jsonl
 
 
@@ -79,13 +79,17 @@ def run(cfg, in_path, out, order=None, min_score=None, count=None):
         groups[r["id"]].append({
             "key": key, "dataset": r["source_dataset"], "score": j.get("score"),
             "expected": j.get("expected_score", j.get("score")),
+            "closed": bool(r.get("closed")),
             "correct": bool(r.get("closed")) and verify.is_correct(r["answer"], r.get("gold") or []),
             "words": len(f"{r.get('rationale') or ''} {r.get('answer') or ''}".split()),
             "grams": trigrams(r.get("rationale") or "")})
 
-    winners, stats = {}, Counter()
+    winners, stats, exact = {}, Counter(), exact_gold(cfg)
     for group in groups.values():
         passing = [c for c in group if c["correct"]]
+        if not passing and group[0]["closed"] and group[0]["dataset"] in exact:
+            stats["dropped: no correct answer"] += 1  # an exact gold: the judge would only pick among wrong answers
+            continue
         pool, k, method = (passing, sc["k_closed"], "rule+judge") if passing else (group, sc["k_open"], "judge")
         kept = pick(pool, k, min_score, sc["max_similarity"])
         if not kept:

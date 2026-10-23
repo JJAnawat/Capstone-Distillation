@@ -1,5 +1,5 @@
-"""Command line entry point: distill prepare | serve | wait | rate | generate | compress | filter | judge | select |
-analyze | push."""
+"""Command line entry point: distill prepare | subsets | serve | wait | rate | generate | compress | filter | judge |
+select | analyze | push."""
 import argparse
 import os
 import sys
@@ -32,7 +32,9 @@ def run(argv=None):
                     help="default: $DISTILL_CONFIG or config.yaml")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("prepare", help="load, dedupe and cache prompts from all datasets")
+    sub.add_parser("prepare", help="load, dedupe and cache prompts from all datasets").add_argument(
+        "--dataset", help="build only this dataset (one added at the end), deduped against the earlier ones")
+    sub.add_parser("subsets", help="print which sets a dataset has: open and/or closed").add_argument("dataset")
 
     sub.add_parser("serve", help="run `vllm serve` for the teacher or judge (GPU VM)").add_argument(
         "role", choices=["teacher", "judge"])
@@ -107,7 +109,9 @@ def run(argv=None):
         cfg = yaml.safe_load(fh)
 
     if args.cmd == "prepare":
-        data.prepare(cfg)
+        data.prepare(cfg, only=args.dataset)
+    elif args.cmd == "subsets":
+        print(" ".join(data.subsets(cfg, args.dataset)))
     elif args.cmd == "serve":
         server.serve(cfg, args.role)
     elif args.cmd == "wait":
