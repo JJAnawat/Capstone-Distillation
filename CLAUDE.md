@@ -164,6 +164,11 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - Re-download at the start of each session: `source .vm_env && .venv/bin/hf download Qwen/Qwen3.5-9B &&
     .venv/bin/hf download google/gemma-4-31B-it-qat-w4a16-ct` takes about 36 s for 40 GB.
   - If the files vanish mid-run, the next `vllm serve` downloads them again by itself.
+  - Even `/dev/shm/aicookie` itself can be gone, so run `mkdir -p` before writing temp files there.
+  - On 2026-10-23 a failed write there cut short a command chain, `source .vm_env` included. A missing prepared file
+    then made `distill` silently run a full `prepare` onto the root disk: 1.9 GB, deleted afterwards, with no data
+    changed.
+  - Now `distill` loads `.vm_env` by itself, and a missing prepared file raises an error.
   - Over SSH, use `.venv/bin/...`: non-interactive shells don't activate the venv.
 
 ## Licensing

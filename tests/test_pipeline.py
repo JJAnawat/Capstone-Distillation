@@ -1,9 +1,11 @@
 """Offline tests: response parsing, request bodies, filters, resume, dedup and sampling. No network."""
 import json
+import os
 import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import httpx
 import pytest
@@ -293,6 +295,23 @@ def test_logiqa_keeps_english_multiple_choice_rows_with_letter_golds():
     assert row["input"].endswith("A. Tom barks.\nB. Tom purrs.\nC. Tom flies.\nD. Nothing.\n\n"
                                  "Answer with the letter of the correct option.")
     assert row["gold"] == ["B", "B. Tom purrs.", "Tom purrs."] and row["strata"] == "Categorical Reasoning"
+
+
+def test_missing_prepared_file_is_an_error_not_a_full_prepare(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(data, "prepare", lambda cfg, only=None: pytest.fail("must not rebuild every dataset"))
+    with pytest.raises(FileNotFoundError, match="prepare --dataset logiqa"):
+        data.load_prompts(CFG, "logiqa")
+
+
+def test_cli_loads_vm_env_for_commands_typed_without_sourcing_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".vm_env").write_text("export HF_HOME=/dev/shm/someone/hf\n")
+    monkeypatch.setenv("HF_HOME", "x")
+    monkeypatch.delenv("HF_HOME")  # restored to its original state afterwards
+    monkeypatch.setattr(cli.data, "subsets", lambda cfg, name: ["closed"])
+    cli.main(["--config", str(Path(__file__).parent.parent / "config.yaml"), "subsets", "logiqa"])
+    assert os.environ["HF_HOME"] == "/dev/shm/someone/hf"
 
 
 def test_prepare_one_dataset_leaves_earlier_ones_alone(tmp_path, monkeypatch):

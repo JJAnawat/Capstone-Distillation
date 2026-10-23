@@ -146,9 +146,12 @@ def prepare(cfg, only=None):
 
 
 def load_prompts(cfg, name):
+    """The dataset's prepared prompts. A missing file is an error, not a silent full `prepare`: that rebuilds every
+    dataset and downloads them all (it once did so by accident on the VM, onto the full root disk)."""
     path = PREPARED_DIR / f"{name}.jsonl"
     if not path.exists():
-        prepare(cfg)
+        raise FileNotFoundError(f"{path} is missing: run `distill prepare` (every dataset) or "
+                                f"`distill prepare --dataset {name}` (one added at the end of the config)")
     with open(path, encoding="utf-8") as f:
         rows = [json.loads(line) for line in f]
     if rows and "closed" not in rows[0]:

@@ -27,6 +27,10 @@ def main(argv=None):
 def run(argv=None):
     sys.stdout.reconfigure(encoding="utf-8")
     load_dotenv(".env")
+    # Machine settings (HF_HOME and the like), also for commands typed without `source .vm_env`: without them,
+    # downloads land on the VM's nearly full root disk. Variables already set win; the Hugging Face libraries are
+    # imported lazily, so they still read these.
+    load_dotenv(".vm_env")
     ap = argparse.ArgumentParser(prog="distill")
     ap.add_argument("--config", default=os.environ.get("DISTILL_CONFIG", "config.yaml"),
                     help="default: $DISTILL_CONFIG or config.yaml")
