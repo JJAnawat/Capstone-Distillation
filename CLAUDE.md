@@ -61,8 +61,11 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 - **Hub backup:** generated data lives only on the VM. `distill push` copies a run and the complexity ratings to a
   private Hugging Face dataset repo (`hub.repo`), and the pipeline runs it after every finished set. The token goes
   in `.vm_env`, never in the config.
-  - Repo: `JuyJuy/capstone-distill-data`, private on purpose. Night 1 went up on 2026-10-23 (29 files, 469 MiB).
-  - The VM's token is fine-grained, but it was pasted into the chat, so it should be replaced and revoked.
+  - Repo: `capstone-thai-slm/capstone-distill-data`, private on purpose. Night 1 went up on 2026-10-23 (29 files,
+    469 MiB) to `JuyJuy/...`, then moved into the team org. Teammates join the org with the read role and use their
+    own tokens.
+  - The VM's token is fine-grained. The user pastes tokens into the chat, so suggest putting future ones on the VM
+    directly.
   - It stays private until a deliberate release: the final rows with a dataset card, once the company-hardware and
     Qwen terms questions in docs/LICENSES.md are settled.
 - **Final rows** carry `student_tokens`, measured in the student tokenizer, and a `teacher` group. `reasoning_tokens`

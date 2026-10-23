@@ -120,7 +120,7 @@ select:
 # Backup (`distill push`; pipeline.sh runs it after every set): a private Hugging Face dataset repo, null = none.
 # Needs a write token on the machine, e.g. `export HF_TOKEN=...` in .vm_env (HF_HOME there is wiped on logout).
 hub:
-  repo: JuyJuy/capstone-distill-data
+  repo: capstone-thai-slm/capstone-distill-data   # team org; members get the read role
 
 # Order matters: a prompt seen in an earlier dataset is dropped from later ones.
 # hint.min_ratings: the best reference response must meet every threshold to be used in hint mode.
