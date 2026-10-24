@@ -53,14 +53,18 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   `LIMIT_CLOSED=500` because of its noisy known answers. About 8k prompts, current sampling.
   - It runs with `BY_SET=1` in tmux. A `stopper` tmux session sends Ctrl-C 10 min before the GPU window ends
     (command under Status).
-  - The bench is postponed: using its result needs the user's approval mid-run.
+  - The bench ran on 2026-10-23 (MTP only): 1.12x the pilot. MTP is off again because it crashed night 2 (Gotchas).
   - The sampler is nested, so raising `LIMIT` later only adds prompts.
   - **Night 1 (2026-10-22 17:52 to 23:34 UTC):** No Robots (2,296 final rows) and HelpSteer2 (2,322) finished.
     - Each set took about 2h45m: about 2h15m in the teacher phase and 30–40 min judging.
     - The run then stopped. Another user's app was on the GPU (see Gotchas), and the old start check refused to start
       a server, so the GPU sat unused until 02:50.
-    - Left: UltraFeedback open and closed, about 3h20m. Resume with `DATASETS=ultrafeedback`; the report still
-      covers every set in `data/full`.
+  - **Night 2 (2026-10-23 16:21 to about 22:00 UTC, with MTP on):** UltraFeedback open (2,304 final rows) and closed
+    (846 rows from 495 prompts: 320 rule+judge, 138 judge fallback) finished, about 4h20m for both.
+    - LogiQA's teacher crashed at 21:17, 35 min in (MTP, see Gotchas).
+    - So far it has 1,126 of its 9,910 samples. Compress, judge and select are still to run; the failed calls are
+      retried on resume.
+    - Until the auto-restart existed, the pipeline then ran on against the dead server: about 4 GPU hours lost.
 - **Hub backup:** generated data lives only on the VM. `distill push` copies a run and the complexity ratings to a
   private Hugging Face dataset repo (`hub.repo`), and the pipeline runs it after every finished set. The token goes
   in `.vm_env`, never in the config.
@@ -154,6 +158,18 @@ prepare → rate → generate → compress (variant B only) → filter → judge
     Weights are fixed (teacher 16.7 GiB, judge 18.7 GiB), so only the KV cache shrinks (full: 18.5 and 16.4 GiB).
     Below the minimum it waits up to 15 min, then fails.
   - If someone else's process grows during a run, either side can run out of memory.
+- **No MTP speculative decoding on this VM.**
+  - The bench (800 samples) measured 1.12x. On night 2 its rejection sampler then ran out of GPU memory
+    (`rejection_sampler._verify_in_chunks`) and killed the teacher.
+  - That memory falls outside vLLM's startup profile. The PyTorch sampler, Qwen's 248k vocab, the other user's 2 GiB
+    and a KV cache 99.8% full on LogiQA's long reasoning all add to it. UltraFeedback had logged the same OOM twice
+    and survived.
+  - Short benches don't show it. Re-enable it only after a long full-load test with a memory margin.
+- **A dead server restarts itself** (added after night 2).
+  - `run_pool` raises `ServerDown` after 16 connection-level failures in a row, and `distill` exits with 75.
+  - `pipeline.sh`'s `with_server` then restarts the server and resumes the command, twice at most.
+  - Before this, every queued request retried for about 38 min against the dead server, and then the empty stages
+    ran on.
 - **VM disk:** the root disk (495 GB) has only ~3–7 GB free; the space belongs to others, not to this project.
   - The shared NFS (`/lambda/nfs/Fusion-SFT`) needs the `fusion` group, which `aicookie` doesn't have.
   - So models, datasets and vLLM caches live in RAM: `HF_HOME=/dev/shm/aicookie/hf` and
@@ -185,22 +201,21 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   - **B vs A:** B scored higher per sample (mean +0.3–0.45; closed pass@1 62% vs 53%), and its rationales state
     facts, not plans. B gains almost nothing after best-of-4.
   - **Cost:** B at N=4 takes about 5.7 s per prompt, judging included.
-- **Full run, night 1** (details under Key decisions): No Robots and HelpSteer2 are done.
-  - Their final rows are in `data/full` on the VM, on the Hub, and on the laptop in `data/vm/full_night1/`.
-  - Report for these two sets: `data/vm/full_night1/reports/full.md`.
-- **Next GPU session** (about 8.5 h; it starts only when the user has allocated the GPU and says go):
-  1. Re-download the models into `/dev/shm`, which is wiped at logout. Check the GPU for other users, and ask when the
-     window ends.
-  2. Bench, MTP only (about 16 min). Async scheduling is already on by default, and concurrency 128 can't win:
-     `tmux new -d -s bench "bash scripts/bench.sh 2>&1 | tee -ai logs/bench.log"`
-     Report `reports/bench.md`, then **wait for the user's decision** before putting a setting into
-     `teacher.vllm.serve_args` or the concurrency (commit, push, pull).
-  3. Run UltraFeedback (about 3h40m), then LogiQA (about 4–4.5 h):
-     `tmux new -d -s full "(DATASETS=ultrafeedback BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh && DATASETS=logiqa BY_SET=1 LIMIT=2500 LIMIT_CLOSED=2500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh) 2>&1 | tee -ai logs/full.log"`
-  4. If the window ends first, add a stopper. Set S to the seconds until 10 min before the end:
+- **Full run so far** (details under Key decisions): No Robots, HelpSteer2, UltraFeedback open and UltraFeedback
+  closed are done, 7,768 final rows in all. LogiQA is prepared on the VM (11,678 prompts) and partly generated.
+  - Their files are in `data/full` on the VM and on the Hub, which every finished set updates.
+  - The laptop only has night 1 (`data/vm/full_night1/`); `hf download` gets the rest.
+- **Next GPU session** (about 4–4.5 h; it starts only when the user has allocated the GPU and says go):
+  1. `mkdir -p /dev/shm/aicookie`, then re-download the models into `/dev/shm`, which is wiped at logout. Check the
+     GPU for other users, and ask when the window ends.
+  2. Resume LogiQA, without MTP:
+     `tmux new -d -s full "DATASETS=logiqa BY_SET=1 LIMIT=2500 LIMIT_CLOSED=2500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log"`
+  3. If the window ends first, add a stopper. Set S to the seconds until 10 min before the end:
      `tmux new -d -s stopper "sleep $S; tmux send-keys -t full -X cancel 2>/dev/null; tmux send-keys -t full C-c"`
-  5. Afterwards, the report covers all five sets. Review it and some samples with the user, and copy the data to
-     the laptop.
+  4. Watch the log for `== … server died; restarting it`. The run recovers by itself, but tell the user.
+  5. Afterwards, the report covers all five sets.
+     - Check LogiQA's yield first: the share of prompts with a correct letter. Those without one are dropped.
+     - Then review the report and some samples with the user, and copy the data to the laptop.
 - **Open, later:**
   - judge validation with thinking on;
   - the closed-gold audit;

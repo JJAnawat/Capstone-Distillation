@@ -40,6 +40,18 @@ limit_args() {  # --limit for a set: LIMIT, or LIMIT_CLOSED for the closed set (
 NARG=(); if [ -n "$N" ]; then NARG=(--n "$N"); fi
 start() { if [ "$BACKEND" = vllm ]; then start_server "$1"; fi; }  # OpenRouter needs no local server
 stop() { stop_server; }
+SERVER_DOWN=75   # distill's exit code when its server stopped answering (server.SERVER_DOWN_EXIT)
+with_server() {  # ROLE CMD...: run CMD; if the server died under it, restart the server and resume CMD (twice at most)
+  local role=$1 restarts=0 rc; shift
+  while true; do
+    rc=0; "$@" || rc=$?
+    if [ "$rc" -ne "$SERVER_DOWN" ] || [ "$BACKEND" != vllm ] || [ "$restarts" -ge 2 ]; then return "$rc"; fi
+    restarts=$((restarts + 1))
+    echo "== $(date -u +%H:%M) the $role server died; restarting it ($restarts of 2) and resuming" >&2
+    stop_server
+    start_server "$role"
+  done
+}
 has() { [[ " $1 " == *" $2 "* ]]; }
 
 # Each set is dataset:subset, one per kind of prompt the dataset has: open, and closed (a known answer). UltraFeedback
@@ -56,15 +68,15 @@ teacher_stage() {  # SET...: rate, generate and compress with one teacher server
   for s in "$@"; do
     ds=${s%%:*}; only=${s##*:}; name="${ds}_${only}"
     read -r -a LIM <<< "$(limit_args "$only")"
-    distill rate --dataset "$ds" --only "$only" "${LIM[@]}" "${BK[@]}"
+    with_server teacher distill rate --dataset "$ds" --only "$only" "${LIM[@]}" "${BK[@]}"
     if has "$VARIANTS" A; then
-      distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" --mode cot --thinking off "${BK[@]}" \
-        --out "$OUT/${name}_A.jsonl"
+      with_server teacher distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" \
+        --mode cot --thinking off "${BK[@]}" --out "$OUT/${name}_A.jsonl"
     fi
     if has "$VARIANTS" B; then
-      distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" --mode open --thinking on "${BK[@]}" \
-        --out "$OUT/${name}_B_raw.jsonl"
-      distill compress "$OUT/${name}_B_raw.jsonl" "${BK[@]}" --out "$OUT/${name}_B.jsonl"
+      with_server teacher distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" \
+        --mode open --thinking on "${BK[@]}" --out "$OUT/${name}_B_raw.jsonl"
+      with_server teacher distill compress "$OUT/${name}_B_raw.jsonl" "${BK[@]}" --out "$OUT/${name}_B.jsonl"
     fi
   done
   stop
@@ -91,13 +103,13 @@ judge_stage() {  # judge this round's kept files with one judge server
   for pv in ${VALIDATE_PROMPTS:-config}; do  # each rubric version is validated once per OUT
     if [ "$VALIDATE" -gt 0 ] && [ ! -e "$OUT/.judge_validated_$pv" ]; then
       PV=(); if [ "$pv" != config ]; then PV=(--prompt-version "$pv"); fi
-      distill judge --validate "$VALIDATE" "${PV[@]}" "${BK[@]}" && touch "$OUT/.judge_validated_$pv"
+      with_server judge distill judge --validate "$VALIDATE" "${PV[@]}" "${BK[@]}" && touch "$OUT/.judge_validated_$pv"
     fi
   done
-  if [ ${#KEPT_OPEN[@]} -gt 0 ]; then distill judge "${KEPT_OPEN[@]}" "${BK[@]}"; fi
+  if [ ${#KEPT_OPEN[@]} -gt 0 ]; then with_server judge distill judge "${KEPT_OPEN[@]}" "${BK[@]}"; fi
   if [ ${#KEPT_CLOSED[@]} -gt 0 ]; then
     ALL=(); if [ "$JUDGE_ALL_CLOSED" = 1 ]; then ALL=(--all); fi
-    distill judge "${KEPT_CLOSED[@]}" "${ALL[@]}" "${BK[@]}"
+    with_server judge distill judge "${KEPT_CLOSED[@]}" "${ALL[@]}" "${BK[@]}"
   fi
   stop
 }

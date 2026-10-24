@@ -179,12 +179,40 @@ def test_ctrl_c_drops_queued_requests_and_returns_at_once(tmp_path, monkeypatch)
     assert [json.loads(line)["id"] for line in out.read_text().splitlines()] == [0]  # finished record kept
 
 
+def test_dead_server_stops_the_stage_instead_of_failing_every_item(tmp_path):
+    started = []
+
+    def work(i):  # a real failure takes ~2 min of retries; 10 ms is enough for the queue not to drain first
+        started.append(i)
+        time.sleep(0.01)
+        raise httpx.ConnectError("[Errno 111] Connection refused")
+
+    with pytest.raises(server.ServerDown, match="could not reach the server"):
+        server.run_pool("t", work, list(range(500)), tmp_path / "out.jsonl", 2, lambda i: {"id": i})
+    assert len(started) < 50  # queued items were dropped, not each retried against a dead server
+    errors = (tmp_path / "out.jsonl.errors.jsonl").read_text().splitlines()
+    assert len(errors) == server.DEAD_AFTER  # the failures seen are recorded, and retried on the next run
+
+
+def test_scattered_failures_do_not_count_as_a_dead_server(tmp_path):
+    def work(i):  # every other request fails at the connection level; the server is up
+        if i % 2:
+            raise httpx.ReadTimeout("timed out")
+        return {"id": i}, 1
+
+    summary = server.run_pool("t", work, list(range(100)), tmp_path / "out.jsonl", 1, lambda i: {"id": i})
+    assert summary["done"] == 50 and summary["failed"] == 50
+
+
 def test_cli_exits_on_ctrl_c_without_joining_threads(monkeypatch):
     codes = []
     monkeypatch.setattr(cli, "run", lambda argv: (_ for _ in ()).throw(KeyboardInterrupt))
     monkeypatch.setattr(cli.os, "_exit", codes.append)
     cli.main(["prepare"])
     assert codes == [130]
+    monkeypatch.setattr(cli, "run", lambda argv: (_ for _ in ()).throw(server.ServerDown("down")))
+    cli.main(["prepare"])
+    assert codes == [130, server.SERVER_DOWN_EXIT]  # pipeline.sh restarts the server on this code
 
 
 # ---------------------------------------------------------------- filters

@@ -121,6 +121,10 @@ committed), not in `config.yaml`.
 4. Selects, backs up to the Hub (if `hub.repo` is set) and reports. The report covers every set in `OUT`, also those
    finished in an earlier session.
 
+**A dead server restarts itself.** If 16 requests in a row fail at the connection level (after their retries), the
+stage stops with exit code 75 instead of failing every queued request. `pipeline.sh` (`with_server`) then restarts
+the server and resumes the stage, at most twice.
+
 Before starting a server, `start_server` refuses only if our own processes hold the GPU (a server left from an earlier
 run). The GPU can be shared: other users' processes are listed as a note and never stopped. `distill serve` then
 lowers `--gpu-memory-utilization` to the free memory minus `gpu_share.headroom_gib`. The weights are fixed, so only

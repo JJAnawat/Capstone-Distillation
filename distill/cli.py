@@ -22,6 +22,10 @@ def main(argv=None):
         print("interrupted", file=sys.stderr, flush=True)
         sys.stdout.flush()
         os._exit(130)
+    except server.ServerDown as e:  # same quick exit; pipeline.sh restarts the server on this code and resumes
+        print(f"server down: {e}", file=sys.stderr, flush=True)
+        sys.stdout.flush()
+        os._exit(server.SERVER_DOWN_EXIT)
 
 
 def run(argv=None):

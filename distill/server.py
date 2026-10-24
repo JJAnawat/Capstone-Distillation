@@ -103,15 +103,26 @@ class Progress:
         return summary
 
 
+class ServerDown(RuntimeError):
+    """The server stopped answering: `DEAD_AFTER` requests in a row failed at the connection level, after their
+    retries. `cli.main` exits with SERVER_DOWN_EXIT, and pipeline.sh then restarts the server and resumes the stage."""
+
+
+DEAD_AFTER = 16
+SERVER_DOWN_EXIT = 75  # EX_TEMPFAIL
+
+
 def run_pool(stage, work, todo, out, concurrency, key, **info):
     """Run `work(item) -> (record, completion_tokens) | None` over `todo` on a thread pool. Each record is appended to
     `out` as soon as it finishes, so an interrupted run loses only requests in flight. Failures go to
     <out>.errors.jsonl, tagged with `key(item)`, and are retried on the next run. Returns the run summary.
     On Ctrl-C the queued items are dropped and the interrupt propagates at once; `cli.main` then exits without joining
-    the threads still waiting on a reply (the server may itself be shutting down and never answer)."""
+    the threads still waiting on a reply (the server may itself be shutting down and never answer). A dead server
+    raises ServerDown the same way, instead of failing every queued item (night 2 lost 4 GPU hours to that)."""
     prog = Progress(stage, len(todo), out)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     ex = ThreadPoolExecutor(concurrency)
+    streak = 0  # connection-level failures in a row
     try:
         with open(out, "a", encoding="utf-8") as fout:
             futures = {ex.submit(work, item): item for item in todo}
@@ -120,7 +131,13 @@ def run_pool(stage, work, todo, out, concurrency, key, **info):
                     with open(f"{out}.errors.jsonl", "a", encoding="utf-8") as ferr:
                         ferr.write(json.dumps({**key(futures[fut]), "error": str(fut.exception())[:500]}) + "\n")
                     prog.update(failed=True)
-                elif (result := fut.result()) is not None:
+                    streak = streak + 1 if isinstance(fut.exception(), httpx.TransportError) else 0
+                    if streak >= DEAD_AFTER:
+                        raise ServerDown(f"[{stage}] {streak} requests in a row could not reach the server: "
+                                         f"{fut.exception()}")
+                    continue
+                streak = 0
+                if (result := fut.result()) is not None:
                     rec, tokens = result
                     fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     fout.flush()
