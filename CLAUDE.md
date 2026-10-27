@@ -51,8 +51,9 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - The pilot itself used N=8 and a fixed 5 steps.
 - **First full run:** variant B, `LIMIT=2500` per set, except the UltraFeedback closed set, which gets
   `LIMIT_CLOSED=500` because of its noisy known answers. About 8k prompts, current sampling.
-  - It runs with `BY_SET=1` in tmux. A `stopper` tmux session sends Ctrl-C 10 min before the GPU window ends
-    (command under Status).
+  - It runs with `BY_SET=1` in tmux. A `stopper` tmux session sends Ctrl-C 10 min before the GPU window ends.
+    Night 3's version (`logs/stopper.sh` on the VM, untracked) waits for clock times, not a sleep count. At 3 min
+    before the end it also kills any of our processes still on the GPU.
   - The bench ran on 2026-10-23 (MTP only): 1.12x the pilot. MTP is off again because it crashed night 2 (Gotchas).
   - The sampler is nested, so raising `LIMIT` later only adds prompts.
   - **Night 1 (2026-10-22 17:52 to 23:34 UTC):** No Robots (2,296 final rows) and HelpSteer2 (2,322) finished.
@@ -61,10 +62,15 @@ prepare → rate → generate → compress (variant B only) → filter → judge
       a server, so the GPU sat unused until 02:50.
   - **Night 2 (2026-10-23 16:21 to about 22:00 UTC, with MTP on):** UltraFeedback open (2,304 final rows) and closed
     (846 rows from 495 prompts: 320 rule+judge, 138 judge fallback) finished, about 4h20m for both.
-    - LogiQA's teacher crashed at 21:17, 35 min in (MTP, see Gotchas).
-    - So far it has 1,126 of its 9,910 samples. Compress, judge and select are still to run; the failed calls are
-      retried on resume.
+    - LogiQA's teacher crashed at 21:17, 35 min in (MTP, see Gotchas), with 1,126 of its 9,910 samples.
     - Until the auto-restart existed, the pipeline then ran on against the dead server: about 4 GPU hours lost.
+  - **Night 3 (2026-10-27 17:08 to 22:19 UTC, MTP off):** LogiQA resumed and finished in 5h11m, with no failures and
+    no restarts. That is 4,664 final rows from 1,946 of its 2,500 prompts.
+    - Times: server start 6 min each, generate (8,784 samples) 3h21m, compress (9,910) 57 min, judge (8,306) 37 min.
+    - Yield: 90% of prompts had a correct letter (pass@4; pass@1 84%). Select dropped 250 prompts with no correct
+      sample and 304 whose best score was below 7.
+    - The judge often marks down answers that repeat the rationale instead of giving just the letter. Not yet
+      reviewed with the user.
 - **Hub backup:** generated data lives only on the VM. `distill push` copies a run and the complexity ratings to a
   private Hugging Face dataset repo (`hub.repo`), and the pipeline runs it after every finished set. The token goes
   in `.vm_env`, never in the config.
@@ -165,6 +171,8 @@ prepare → rate → generate → compress (variant B only) → filter → judge
     and a KV cache 99.8% full on LogiQA's long reasoning all add to it. UltraFeedback had logged the same OOM twice
     and survived.
   - Short benches don't show it. Re-enable it only after a long full-load test with a memory margin.
+  - It may not even help at full load. On night 3, LogiQA without MTP ran at 2,100–2,325 tok/s, the same speed it
+    had with MTP on night 2.
 - **A dead server restarts itself** (added after night 2).
   - `run_pool` raises `ServerDown` after 16 connection-level failures in a row, and `distill` exits with 75.
   - `pipeline.sh`'s `with_server` then restarts the server and resumes the command, twice at most.
@@ -193,7 +201,7 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 No Robots is CC BY-NC 4.0: everything derived from it is non-commercial, so keep `source_dataset` on every row.
 Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 
-## Status (2026-10-27)
+## Status (2026-10-28)
 - **Built and in use on the VM:** the full pipeline, with resume, clean Ctrl-C, per-set mode, the shared-GPU fit,
   and the Hub backup with its dataset card. 89 offline tests.
 - **Pilot (2026-10-22: 100 prompts per set, N=8; reports/pilot2.md, reports/judge_validation.md):**
@@ -203,25 +211,17 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   - **B vs A:** B scored higher per sample (mean +0.3–0.45; closed pass@1 62% vs 53%), and its rationales state
     facts, not plans. B gains almost nothing after best-of-4.
   - **Cost:** B at N=4 takes about 5.7 s per prompt, judging included.
-- **Full run so far** (details under Key decisions): No Robots, HelpSteer2, UltraFeedback open and UltraFeedback
-  closed are done, 7,768 final rows in all. LogiQA is prepared on the VM (11,678 prompts) and partly generated.
-  - Their files are in `data/full` on the VM and on the Hub, which every finished set updates.
-  - The laptop only has night 1 (`data/vm/full_night1/`); `hf download` gets the rest.
-- **Next GPU session** (about 4–4.5 h; it starts only when the user has allocated the GPU and says go):
-  1. The models are already in `~/hf`, so there's no re-download. Check the GPU for other users, and ask when the
-     window ends.
-  2. Resume LogiQA, without MTP:
-     `tmux new -d -s full "DATASETS=logiqa BY_SET=1 LIMIT=2500 LIMIT_CLOSED=2500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log"`
-  3. If the window ends first, add a stopper. Set S to the seconds until 10 min before the end:
-     `tmux new -d -s stopper "sleep $S; tmux send-keys -t full -X cancel 2>/dev/null; tmux send-keys -t full C-c"`
-  4. Watch the log for `== … server died; restarting it`. The run recovers by itself, but tell the user.
-  5. Afterwards, the report covers all five sets.
-     - Check LogiQA's yield first: the share of prompts with a correct letter. Those without one are dropped.
-     - Then review the report and some samples with the user, and copy the data to the laptop.
+- **The full run is done** (details under Key decisions). All five sets have finished: 12,432 final rows, 4,664 of
+  them from LogiQA.
+  - Their files are in `data/full` on the VM and on the Hub. The LogiQA files were checked against the Hub byte for
+    byte on 2026-10-28.
+  - The laptop has every set's final rows, select stats and `reports/full.md` in `data/vm/full_night3/`, and night
+    1's full files in `data/vm/full_night1/`. `hf download` gets the rest.
+- **Next, with the user:** review `reports/full.md` and some samples, LogiQA's verbose answers first (Night 3 above).
 - **Models moved off /dev/shm (2026-10-27):** `.vm_env` now sets `HF_HOME=$HOME/hf` and
   `VLLM_CACHE_ROOT=$HOME/vllm-cache` (the old file is `.vm_env.bak-shm`), and both models are in `~/hf` (40 GB;
-  the files sit in `hub/blobs`, so per-model `du` looks tiny). The home now holds 53 GB. Not yet checked: how long
-  the first `vllm serve` takes to load from the share; watch it at the next session's start.
+  the files sit in `hub/blobs`, so per-model `du` looks tiny). The home now holds 53 GB. Loading from the share
+  is fine: each server starts in about 6 min. Weights take 107 s for the teacher and 139 s for the judge.
 - **Open, later:**
   - judge validation with thinking on;
   - the closed-gold audit;
