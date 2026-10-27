@@ -121,7 +121,7 @@ select:
   seed: 0
 
 # Backup (`distill push`; pipeline.sh runs it after every set): a private Hugging Face dataset repo, null = none.
-# Needs a write token on the machine, e.g. `export HF_TOKEN=...` in .vm_env (HF_HOME there is wiped on logout).
+# Needs a write token on the machine, e.g. `export HF_TOKEN=...` in .vm_env.
 hub:
   repo: capstone-thai-slm/capstone-distill-data   # team org; members get the read role
 

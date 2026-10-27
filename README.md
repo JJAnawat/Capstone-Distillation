@@ -95,11 +95,11 @@ returns).
 
 **Machine settings** go in `.vm_env` in the repo root. It is untracked, and the scripts source it, because
 `~/.bashrc` is often skipped by tmux and non-interactive shells. Source it yourself for commands typed by hand. On the
-current VM the root disk is nearly full and the shared filesystem is not writable for us, so the model, dataset and
-vLLM caches live in RAM (`/dev/shm`, wiped when the user is fully logged out):
+current VM the root disk is nearly full, but the home directory is on a shared filesystem with room, so the model,
+dataset and vLLM caches live there (not in `/dev/shm`, which is wiped when the user is fully logged out):
 ```bash
-export HF_HOME=/dev/shm/aicookie/hf
-export VLLM_CACHE_ROOT=/dev/shm/aicookie/vllm-cache
+export HF_HOME=$HOME/hf
+export VLLM_CACHE_ROOT=$HOME/vllm-cache
 export HF_TOKEN=hf_...   # only for Hub backups: a fine-grained token with write access to the backup repo alone
 ```
 

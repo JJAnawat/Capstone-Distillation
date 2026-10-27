@@ -170,28 +170,30 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - `pipeline.sh`'s `with_server` then restarts the server and resumes the command, twice at most.
   - Before this, every queued request retried for about 38 min against the dead server, and then the empty stages
     ran on.
-- **VM disk:** the root disk (495 GB) has only ~3–7 GB free; the space belongs to others, not to this project.
-  - The shared NFS (`/lambda/nfs/Fusion-SFT`) needs the `fusion` group, which `aicookie` doesn't have.
-  - So models, datasets and vLLM caches live in RAM: `HF_HOME=/dev/shm/aicookie/hf` and
-    `VLLM_CACHE_ROOT=/dev/shm/aicookie/vllm-cache`, set in `.vm_env` (untracked, sourced by `scripts/lib.sh` and
-    `vm_check.sh`). Pipeline outputs are small and stay in the repo.
+- **VM disk:** the root disk `/` (495 GB) belongs to others and is nearly full (1.0 GB free on 2026-10-27, falling
+  about 0.6 GB a day). Nothing of ours lives there.
+  - `aicookie`'s home is on the shared virtiofs mount (`/lambda/nfs/Fusion-SFT/aicookie`, owned by us and
+    writable), so the repo, venv and pipeline outputs are already there. Earlier notes said the share was off-limits;
+    that was wrong. Only the share's top level needs the `fusion` group, which we don't have and don't need.
+  - The share reports a placeholder size (8.0 EiB), so its real limit can't be seen from the VM. The admin approved
+    keeping the models there (2026-10-27).
+  - So models, datasets and vLLM caches go in the home: `HF_HOME=$HOME/hf` and `VLLM_CACHE_ROOT=$HOME/vllm-cache`,
+    set in `.vm_env` (untracked, sourced by `scripts/lib.sh` and `vm_check.sh`). Unlike `/dev/shm`, they survive
+    logouts.
+  - Over SSH, use `.venv/bin/...`: non-interactive shells don't activate the venv.
 - **/dev/shm is wiped whenever the user is fully logged out** (systemd `RemoveIPC` at its default, yes), even without
-  a reboot.
-  - Re-download at the start of each session: `source .vm_env && .venv/bin/hf download Qwen/Qwen3.5-9B &&
-    .venv/bin/hf download google/gemma-4-31B-it-qat-w4a16-ct` takes about 36 s for 40 GB.
-  - If the files vanish mid-run, the next `vllm serve` downloads them again by itself.
-  - Even `/dev/shm/aicookie` itself can be gone, so run `mkdir -p` before writing temp files there.
+  a reboot. The models lived there until 2026-10-27 and had to be downloaded again each session (about 36 s for
+  40 GB). Don't put anything there that must survive.
   - On 2026-10-23 a failed write there cut short a command chain, `source .vm_env` included. A missing prepared file
     then made `distill` silently run a full `prepare` onto the root disk: 1.9 GB, deleted afterwards, with no data
     changed.
   - Now `distill` loads `.vm_env` by itself, and a missing prepared file raises an error.
-  - Over SSH, use `.venv/bin/...`: non-interactive shells don't activate the venv.
 
 ## Licensing
 No Robots is CC BY-NC 4.0: everything derived from it is non-commercial, so keep `source_dataset` on every row.
 Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 
-## Status (2026-10-23)
+## Status (2026-10-27)
 - **Built and in use on the VM:** the full pipeline, with resume, clean Ctrl-C, per-set mode, the shared-GPU fit,
   and the Hub backup with its dataset card. 89 offline tests.
 - **Pilot (2026-10-22: 100 prompts per set, N=8; reports/pilot2.md, reports/judge_validation.md):**
@@ -206,8 +208,8 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   - Their files are in `data/full` on the VM and on the Hub, which every finished set updates.
   - The laptop only has night 1 (`data/vm/full_night1/`); `hf download` gets the rest.
 - **Next GPU session** (about 4–4.5 h; it starts only when the user has allocated the GPU and says go):
-  1. `mkdir -p /dev/shm/aicookie`, then re-download the models into `/dev/shm`, which is wiped at logout. Check the
-     GPU for other users, and ask when the window ends.
+  1. The models are already in `~/hf`, so there's no re-download. Check the GPU for other users, and ask when the
+     window ends.
   2. Resume LogiQA, without MTP:
      `tmux new -d -s full "DATASETS=logiqa BY_SET=1 LIMIT=2500 LIMIT_CLOSED=2500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log"`
   3. If the window ends first, add a stopper. Set S to the seconds until 10 min before the end:
@@ -216,6 +218,10 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   5. Afterwards, the report covers all five sets.
      - Check LogiQA's yield first: the share of prompts with a correct letter. Those without one are dropped.
      - Then review the report and some samples with the user, and copy the data to the laptop.
+- **Models moved off /dev/shm (2026-10-27):** `.vm_env` now sets `HF_HOME=$HOME/hf` and
+  `VLLM_CACHE_ROOT=$HOME/vllm-cache` (the old file is `.vm_env.bak-shm`), and both models are in `~/hf` (40 GB;
+  the files sit in `hub/blobs`, so per-model `du` looks tiny). The home now holds 53 GB. Not yet checked: how long
+  the first `vllm serve` takes to load from the share; watch it at the next session's start.
 - **Open, later:**
   - judge validation with thinking on;
   - the closed-gold audit;
