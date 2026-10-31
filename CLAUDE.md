@@ -208,8 +208,15 @@ Thai sets first run translate → check-translation → similarity → build-tra
   - `pipeline.sh`'s `with_server` then restarts the server and resumes the command, twice at most.
   - Before this, every queued request retried for about 38 min against the dead server, and then the empty stages
     ran on.
-- **VM disk:** the root disk `/` (495 GB) belongs to others and is nearly full (1.0 GB free on 2026-10-27, falling
-  about 0.6 GB a day). Nothing of ours lives there.
+- **VM disk:** the root disk `/` (495 GB) belongs to others. It had 1.0 GB free on 2026-10-27 and 52 GB on
+  2026-10-31.
+  - Earlier notes said nothing of ours lives there; that was wrong. `/home/aicookie` is a real directory (not our
+    `$HOME`) holding an old clone, `/home/aicookie/Capstone-Distillation` (9.7 GB, at a9cff7c), with its own venv.
+  - **The repo's venv was copied from it**, so 55 scripts in `.venv/bin` still have `#!/home/aicookie/...`
+    shebangs and run the old venv. `vllm` is one of them (both venvs have vLLM 0.32.0), and so are `pytest` and
+    `hf`. Reinstalled packages (`distill`) point at the right venv.
+  - Use `.venv/bin/python -m pytest`. Don't delete the old clone until those shebangs are rewritten, or
+    `vllm serve` breaks.
   - `aicookie`'s home is on the shared virtiofs mount (`/lambda/nfs/Fusion-SFT/aicookie`, owned by us and
     writable), so the repo, venv and pipeline outputs are already there. Earlier notes said the share was off-limits;
     that was wrong. Only the share's top level needs the `fusion` group, which we don't have and don't need.
@@ -237,6 +244,15 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 - **Thai sets: the CPU phase is built** (2026-10-31): `distill/translate.py`, the Thai prompts, the scripts and the
   Thai-aware filter, select, verify and hub. 133 offline tests.
   - The Thai teacher prompts (`prompts/*_th1.txt`) are Claude's drafts; the user reviews their wording.
+  - **The VM is ready:**
+    - it has pulled a9ee5ab and installed the `qe` extra (sentence-transformers 6.2.0; vLLM, torch and transformers
+      unchanged);
+    - Typhoon Translate 1.5 and BGE-M3 are in `~/hf`, and BGE-M3 works on the CPU (about 1 min including the load);
+    - 133 tests pass there.
+  - **Dry pool check** (the same on both machines), unused prompts left vs the limit: No Robots 6,205 / 1,400,
+    HelpSteer2 4,692 / 1,400, UltraFeedback open 48,572 / 1,400, LogiQA 9,178 / 1,650.
+  - **The laptop smoke test was skipped:** the OpenRouter key in `.env` has expired (HTTP 401, nothing charged).
+    The laptop now has the VM's ratings files in `data/prepared/`.
 - **Pilot (2026-10-22: 100 prompts per set, N=8; reports/pilot2.md, reports/judge_validation.md):**
   - **Judge:** HelpSteer2 agreement was 71.0% for v1 and 70.2% for v2. v2 stays for its wider score spread.
   - **Judge vs rules on closed questions:** AUC about 0.5, mostly from noisy FLAN golds. A small human audit is
