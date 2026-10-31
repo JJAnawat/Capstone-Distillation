@@ -275,9 +275,10 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   - **The VM is ready:**
     - it has installed the `qe` extra (sentence-transformers 6.2.0; vLLM, torch and transformers unchanged);
     - the venv no longer points at the old clone (Gotchas), and the tests pass there;
-    - `~/hf` holds Qwen3.5-9B, Gemma 4 31B, Qwen3-32B-AWQ (the other-family checker) and the student tokenizer.
-      Typhoon Translate and BGE-M3 were deleted after the comparison (2026-11-01, 11.8 GiB). The old clone on the
-      root disk stays: the user's choice.
+    - `~/hf` holds only Qwen3.5-9B, Gemma 4 31B and the student tokenizer.
+      - Typhoon Translate and BGE-M3 were deleted after the comparison (11.8 GiB), and Qwen3-32B-AWQ after it lost
+        the checker test (18 GiB).
+      - The user wants unused models deleted. The old clone on the root disk stays: the user's choice.
   - **Dry pool check** (the same on both machines), unused prompts left vs the limit: No Robots 6,205 / 1,400,
     HelpSteer2 4,692 / 1,400, UltraFeedback open 48,572 / 1,400, LogiQA 9,178 / 1,650.
   - The laptop has the VM's ratings files in `data/prepared/`. Its OpenRouter key has expired, and no smoke tests
@@ -305,8 +306,10 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
        `reports/translate_compare.xlsx`.
   2. **G2, night 1 (about 6 h):**
      - `bash scripts/second_checker.sh` is done: Gemma stays the checker (Key decisions).
-     - Next, on the user's go: `LIMIT=500 bash scripts/run_thai.sh` (~5.2 h). That's prep (~1.5 h, one Gemma session
-       that translates and checks), then 500 prompts per set.
+     - **`LIMIT=500 bash scripts/run_thai.sh` started on 2026-10-31 at 19:04 UTC**, in tmux `thai`, logging to
+       `logs/thai.log`. The window ends 2026-11-01 01:00 UTC (08:00 Thailand). The stopper, `logs/stopper_thai.sh` in
+       tmux `stopper` (untracked, adapted from night 3's), sends Ctrl-C at 00:50 and kills our GPU processes at 00:57.
+       The estimate is ~5.2 h: prep (~1.5 h, one Gemma session that translates and checks), then 500 prompts per set.
   3. **G2, night 2:** `LIMIT=1200` (~5.0 h). **Night 3:** `LIMIT=0`, the rest (~1.8 h). That's about 6.5k Thai rows
      in total.
      - The estimates use the English run's rates (open sets 3.8–4.9 s per prompt, LogiQA 7.7 s, so about 23 s per
