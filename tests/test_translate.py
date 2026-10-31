@@ -234,13 +234,46 @@ def test_compare_report_scores_translators_and_signals(tmp_path):
     wb.save(out)
     translate.compare_report(out, tmp_path / "report.md")
     text = (tmp_path / "report.md").read_text(encoding="utf-8")
-    assert "6 of 6 translations graded" in text
+    assert "Graded by hand: 6 of 6 translations for meaning, 6 for fluency" in text
+    assert "compared on the 2 prompts" in text and "Unreadable" not in text
     assert "| teacher | model-teacher | 2 | 5.00 | 5.00 | 0% | 0% | 50% | -0.10 |" in text
     assert "| typhoon | model-typhoon | 2 | 2.00 | 2.00 | 100% | 100% | 50% | -0.10 |" in text
     assert "| judge meaning (expected) | meaning | 6 | 1.00 | 1.00 |" in text
     assert "| embedding similarity | 0.75 | 100% | 100% |" in text  # the bad ones (0.7) out, the good (0.9, 1.0) in
     assert "| judge meaning (expected) | 4.0 | 100% | 50% |" in text  # the judge's own 3.9 falls below
     assert "| not_thai | 2 | 2.00 |" in text and "odd / phrase" in text and "English prompt 1" in text
+
+
+def test_compare_report_uses_only_graded_cells_and_complete_prompts(tmp_path):
+    from openpyxl import load_workbook
+    out = tmp_path / "compare.xlsx"
+    key = translate.compare_sheet(comparison_files(tmp_path), out)
+    wb = load_workbook(out)
+    ws = wb["grades"]
+    grade = {"teacher": 5, "judge": 4, "typhoon": 2}
+    for row in list(ws.iter_rows(min_row=2))[:3]:  # the first prompt: all three translations
+        row[4].value = row[5].value = grade[key[row[0].value]["translator"]]
+    ws.cell(row=5, column=5, value=5)       # the second prompt: one meaning grade, no fluency
+    ws.cell(row=6, column=5, value="4.5")   # a typo
+    ws.cell(row=6, column=6, value="3")     # fluency typed as text
+    wb.save(out)
+    grades, bad = translate.read_grades(out)
+    assert sorted(grades) == [1, 2, 3, 4, 5] and grades[4][1] is None and grades[5][:2] == (None, 3)
+    assert bad == [(5, "meaning", "4.5")]
+    translate.compare_report(out, tmp_path / "report.md")
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "Graded by hand: 4 of 6 translations for meaning, 4 for fluency" in text
+    assert "compared on the 1 prompts" in text and "Only 1 complete prompts" in text
+    assert "Unreadable grades, left out: row 5 meaning '4.5'." in text
+    assert "| teacher | model-teacher | 1 | 5.00 | 5.00 | 0% |" in text  # the half-graded prompt is not compared
+    assert "| judge fluency | fluency | 4 |" in text and "| judge meaning (expected) | meaning | 4 |" in text
+
+
+def test_grade_reads_excel_cells():
+    assert [translate.grade(v) for v in (None, "", " ", 4, 4.0, "5")] == [None, None, None, 4, 4, 5]
+    for v in (0, 6, 4.5, "x"):
+        with pytest.raises(ValueError):
+            translate.grade(v)
 
 
 def test_spearman_handles_ties():

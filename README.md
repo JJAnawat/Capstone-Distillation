@@ -350,7 +350,10 @@ tmux new -s compare 'bash scripts/translate_compare.sh 2>&1 | tee -ai logs/compa
 distill compare-report reports/translate_compare.xlsx      # -> reports/translate_compare.md
 ```
 The report shows each translator's grades and how well each automatic signal agrees with them: Spearman, AUC,
-threshold tables, rule flags, the judge's self-preference. Set `translate.translator`, `min_meaning` and
+threshold tables, rule flags, the judge's self-preference. A partly graded sheet works: only filled cells count, and
+unreadable ones (not a whole number from 1 to 5) are listed and skipped. Translators are compared only on prompts
+whose three translations all have a meaning grade, so grade a prompt's rows together; the signals use every graded
+row. Set `translate.translator`, `min_meaning` and
 `min_similarity` from it.
 
 **Thai run:**

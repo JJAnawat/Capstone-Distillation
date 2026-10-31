@@ -364,16 +364,35 @@ def compare_sheet(paths, out, seed=0):
     return key
 
 
+def grade(value):
+    """A 1-5 grade from a sheet cell, or None if it is empty. Raises ValueError for anything else."""
+    if value is None or not str(value).strip():
+        return None
+    g = float(str(value).strip())  # Excel may store 4 as 4.0, or as text
+    if g != int(g) or not 1 <= g <= 5:
+        raise ValueError(value)
+    return int(g)
+
+
 def read_grades(xlsx):
-    """{row: (meaning, fluency, note)} for the graded rows of the sheet."""
+    """({row: (meaning, fluency, note)}, [(row, column, value)] of unreadable grades). The sheet may be graded only in
+    part: rows without a grade or a note are left out, and either grade of a row may be None."""
     from openpyxl import load_workbook
     ws = load_workbook(xlsx, read_only=True)["grades"]
-    grades = {}
+    grades, bad = {}, []
     for row in ws.iter_rows(min_row=2, values_only=True):
-        n, meaning, fluency, note = row[0], row[4], row[5], row[6]
-        if n is not None and meaning not in (None, "") and fluency not in (None, ""):
-            grades[int(n)] = (int(meaning), int(fluency), note or "")
-    return grades
+        if row[0] is None:
+            continue
+        scores = []
+        for column, value in (("meaning", row[4]), ("fluency", row[5])):
+            try:
+                scores.append(grade(value))
+            except ValueError:
+                bad.append((int(row[0]), column, value))
+                scores.append(None)
+        if any(s is not None for s in scores) or row[6]:
+            grades[int(row[0])] = (*scores, row[6] or "")
+    return grades, bad
 
 
 def ranks(xs):
@@ -402,10 +421,12 @@ def fmt(x, spec=".2f"):
 
 def compare_report(xlsx, out="reports/translate_compare.md"):
     """Read the user's grades and write the comparison report: each translator's grades, how well each automatic
-    signal (the judge's meaning and fluency, embedding similarity, rule flags) agrees with them, and the thresholds."""
+    signal (the judge's meaning and fluency, embedding similarity, rule flags) agrees with them, and the thresholds.
+    Only graded cells count. Translators are compared on the prompts whose translations are all graded for meaning,
+    so a sheet graded part of the way stays fair; the signals use every graded translation."""
     key = {int(k): v for k, v in json.loads(Path(f"{str(xlsx).removesuffix('.xlsx')}_key.json")
                                           .read_text(encoding="utf-8")).items()}
-    grades = read_grades(xlsx)
+    grades, bad = read_grades(xlsx)
     files = {}
     for p in {v["path"] for v in key.values()}:
         files[p] = (by_id(p), by_id(f"{stem(p)}.check.jsonl"), by_id(f"{stem(p)}.similarity.jsonl"))
@@ -416,30 +437,44 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
         rows.append({"row": n, **k, "meaning": meaning, "fluency": fluency, "note": note, "rec": rec,
                      "chk": chk, "sim": (sim or {}).get("similarity"), "flags": (rec or {}).get("rule_flags", [])})
     graded = [r for r in rows if r["meaning"] is not None]
+    fluent = [r for r in rows if r["fluency"] is not None]
+    groups = defaultdict(list)
+    for r in rows:
+        groups[(r["dataset"], r["id"])].append(r)
+    complete = {g for g, rs in groups.items() if all(r["meaning"] is not None for r in rs)}
+    fair = [r for r in rows if (r["dataset"], r["id"]) in complete]
     mean = lambda xs: sum(xs) / len(xs) if xs else None
     lines = ["# Translator comparison", "",
-             f"{len(graded)} of {len(rows)} translations graded by hand (meaning and fluency, 1-5). "
-             "Bad = meaning ≤ 3.", "", "## Translators", "",
-             "| translator | model | graded | meaning | fluency | meaning ≤ 2 | rule-flagged | judge: English-only "
-             "| judge meaning − user |", "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
+             f"Graded by hand: {len(graded)} of {len(rows)} translations for meaning, {len(fluent)} for fluency "
+             f"(1-5). Translators are compared on the {len(complete)} prompts whose translations are all graded for "
+             "meaning; rule flags and English-only cover all their translations. The signals use every graded "
+             "translation. Bad = meaning ≤ 3.", ""]
+    if len(complete) < 15:
+        lines += [f"Only {len(complete)} complete prompts: read the differences between translators as rough.", ""]
+    if bad:
+        lines += ["Unreadable grades, left out: " + ", ".join(f"row {n} {c} {v!r}" for n, c, v in bad) + ".", ""]
+    lines += ["## Translators", "",
+              "| translator | model | prompts | meaning | fluency | meaning ≤ 2 | rule-flagged | judge: English-only "
+              "| judge meaning − user |", "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
     for t in sorted({r["translator"] for r in rows}):
-        g = [r for r in graded if r["translator"] == t]
-        a = [r for r in rows if r["translator"] == t]
-        diff = mean([r["chk"]["meaning_expected"] - r["meaning"] for r in g if r["chk"]])
-        lines.append(f"| {t} | {a[0]['model']} | {len(g)} | {fmt(mean([r['meaning'] for r in g]))} | "
-                     f"{fmt(mean([r['fluency'] for r in g]))} | {report.share(g, lambda r: r['meaning'] <= 2) if g else '—'} | "
+        f, a = [r for r in fair if r["translator"] == t], [r for r in rows if r["translator"] == t]
+        diff = mean([r["chk"]["meaning_expected"] - r["meaning"] for r in graded if r["translator"] == t and r["chk"]])
+        lines.append(f"| {t} | {a[0]['model']} | {len(f)} | {fmt(mean([r['meaning'] for r in f]))} | "
+                     f"{fmt(mean([r['fluency'] for r in f if r['fluency'] is not None]))} | "
+                     f"{report.share(f, lambda r: r['meaning'] <= 2) if f else '—'} | "
                      f"{report.share(a, lambda r: bool(r['flags']))} | "
                      f"{report.share(a, lambda r: bool((r['chk'] or {}).get('english_only')))} | {fmt(diff, '+.2f')} |")
     lines += ["", "## Automatic signals vs the grades", "",
-              "Spearman: rank correlation with the user's grade. AUC: how often a good translation (meaning ≥ 4) "
-              "scores above a bad one.", "", "| signal | vs | rows | Spearman | AUC good > bad |", "|---|---|---:|---:|---:|"]
+              "Spearman: rank correlation with the user's grade. AUC: how often a good translation (grade ≥ 4) "
+              "scores above a bad one (≤ 3).", "", "| signal | vs | rows | Spearman | AUC good > bad |",
+              "|---|---|---:|---:|---:|"]
     signals = [("judge meaning (expected)", "meaning", lambda r: r["chk"] and r["chk"]["meaning_expected"]),
                ("judge fluency", "fluency", lambda r: r["chk"] and r["chk"]["fluency"]),
                ("embedding similarity", "meaning", lambda r: r["sim"])]
     for name, vs, f in signals:
-        pts = [(f(r), r[vs], r["meaning"]) for r in graded if f(r) is not None]
-        good, bad = [s for s, _, m in pts if m >= 4], [s for s, _, m in pts if m <= 3]
-        rho = spearman([s for s, _, _ in pts], [g for _, g, _ in pts]) if len(pts) > 2 else None
+        pts = [(f(r), r[vs]) for r in (graded if vs == "meaning" else fluent) if f(r) is not None]
+        good, bad = [s for s, g in pts if g >= 4], [s for s, g in pts if g <= 3]
+        rho = spearman([s for s, _ in pts], [g for _, g in pts]) if len(pts) > 2 else None
         lines.append(f"| {name} | {vs} | {len(pts)} | {fmt(rho)} | "
                      f"{fmt(report.auc(good, bad) if good and bad else None)} |")
     lines += ["", "## Thresholds", "", "Share of bad translations rejected and of good ones kept at each threshold.",
@@ -460,11 +495,11 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
                       for r in rows if (r["chk"] or {}).get("english_only") and r["rec"]})
     lines += ["", "## Flagged by the judge as bound to English", "", "| set | id | prompt |", "|---|---|---|"]
     lines += [f"| {d} | {i} | {t} |" for d, i, t in english] or ["| — | — | none |"]
-    notes = [r for r in graded if r["note"]]
+    notes = [r for r in rows if r["note"]]
     if notes:
         lines += ["", "## Grader notes", "", "| row | translator | meaning | note |", "|---:|---|---:|---|"]
-        lines += [f"| {r['row']} | {r['translator']} | {r['meaning']} | {str(r['note']).replace('|', '/')} |"
-                  for r in notes]
+        lines += [f"| {r['row']} | {r['translator']} | {'—' if r['meaning'] is None else r['meaning']} | "
+                  f"{str(r['note']).replace('|', '/')} |" for r in notes]
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"[compare] report -> {out}")
