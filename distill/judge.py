@@ -92,9 +92,14 @@ def expected_score(logprobs, score, digits=DIGITS):
     return float(score)
 
 
+def strip_thought(text):
+    """`text` without the empty thought block Gemma 4 emits even with thinking off (`<|channel>...<channel|>`)."""
+    return re.sub(r"<\|channel>.*?<channel\|>", "", text or "", flags=re.S)
+
+
 def reply_json(choice):
     """The JSON object in a judge reply ({} if none), after Gemma's empty thought block is stripped."""
-    content = re.sub(r"<\|channel>.*?<channel\|>", "", choice["message"].get("content") or "", flags=re.S)
+    content = strip_thought(choice["message"].get("content"))
     m = re.search(r"\{.*\}", content, re.S)
     return json.loads(m.group(0)) if m else {}
 

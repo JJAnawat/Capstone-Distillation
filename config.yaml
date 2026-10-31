@@ -83,7 +83,7 @@ typhoon:
     startup_timeout_s: 1800
     serve_env: {VLLM_USE_FLASHINFER_SAMPLER: 0}
     serve_args:
-      - --max-model-len=16000            # the card's server example; it advises inputs under 8,192 tokens
+      - --max-model-len=32768            # room for a long prompt plus translate.max_tokens (the card serves 16,000)
       - --dtype=bfloat16
       - --gpu-memory-utilization=0.5
       - --max-num-seqs=64

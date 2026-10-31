@@ -91,7 +91,8 @@ def run(cfg, dataset, translator=None, limit=None, out=None, reference=True, con
         messages = ([{"role": "system", "content": system.format(**kw)}] if system else []) + [
             {"role": "user", "content": user.format(**kw)}]
         body = server.build_body(ep, messages, tc["sampling"], False, seed, tc["max_tokens"])
-        return parse_response(server.call_api(client, body, tc["max_retries"]), thinking=False)
+        p = parse_response(server.call_api(client, body, tc["max_retries"]), thinking=False)
+        return {**p, "answer": judge.strip_thought(p["answer"]).strip()}  # Gemma as the translator
 
     def work(r):
         seed = sample_seed(cfg["generate"]["seed"], r["id"], 0)

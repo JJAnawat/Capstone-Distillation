@@ -62,6 +62,13 @@ def test_translate_requests_records_and_resume(source, tmp_path):
     assert len(bodies) == 2  # resumed: only the two new prompts, and no references
 
 
+def test_gemma_thought_block_is_not_part_of_the_translation(source, tmp_path):
+    reply = lambda p, b: completion("<|channel>thought\n<channel|>" + THAI)
+    translate.run(CFG, "no_robots_th", "judge", limit=1, out=tmp_path / "t.jsonl", reference=False,
+                  client=mock_client(reply))
+    assert report.read_jsonl(tmp_path / "t.jsonl")[0]["input"] == THAI
+
+
 def test_typhoon_gets_its_card_prompt_and_dry_run_calls_nothing(source, tmp_path, capsys):
     bodies = []
     translate.run(CFG, "no_robots_th", "typhoon", limit=1, out=tmp_path / "t.jsonl", reference=False,
