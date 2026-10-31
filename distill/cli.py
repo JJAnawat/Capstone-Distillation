@@ -81,7 +81,6 @@ def run(argv=None):
     c.add_argument("file")
     c.add_argument("--out", required=True)
     c.add_argument("--concurrency", type=int)
-    c.add_argument("--prompt-version", help="compress template version for every row (default: per dataset, config)")
     c.add_argument("--backend", choices=BACKENDS)
 
     a = sub.add_parser("analyze", help="write a Markdown report comparing variants, scores and lengths")
@@ -160,8 +159,7 @@ def run(argv=None):
                      max_cost=args.max_cost, include_reference=args.include_reference, model=args.model,
                      prompt_version=args.prompt_version, only=args.only, backend=args.backend)
     elif args.cmd == "compress":
-        compress.run(cfg, args.file, args.out, concurrency=args.concurrency, backend=args.backend,
-                     prompt_version=args.prompt_version)
+        compress.run(cfg, args.file, args.out, concurrency=args.concurrency, backend=args.backend)
     elif args.cmd == "analyze":
         report.analyze(args.files, args.out, min_score=cfg["select"]["min_score"], student=cfg["student"]["tokenizer"])
     elif args.cmd == "filter":

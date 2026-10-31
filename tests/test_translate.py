@@ -9,7 +9,7 @@ import types
 import pytest
 import yaml
 
-from distill import compress, data, generate, hub, rate, report, selection, translate, verify
+from distill import data, generate, hub, rate, report, selection, translate, verify
 from helpers import CFG, completion, gen_row, mock_client
 
 SOURCE = [{"id": f"p{i}", "input": f"Name 3 fruits high in vitamin C, take {'abcdefghijkl'[i]}.", "strata": f"s{i % 2}", "closed": False,
@@ -253,27 +253,16 @@ def test_rate_uses_the_english_original(tmp_path, monkeypatch):
     assert "Name 3 fruits." in bodies[0]["messages"][-1]["content"] and THAI not in bodies[0]["messages"][-1]["content"]
 
 
-def test_a_dataset_can_pick_its_own_prompt_versions(tmp_path, monkeypatch):
-    cfg = copy.deepcopy(CFG)
-    cfg["datasets"]["no_robots_th"]["prompt_versions"] = {"open": "th1", "compress": "th1"}
+def test_generate_keeps_the_english_prompt_and_carries_the_translation(tmp_path, monkeypatch):
     monkeypatch.setattr(data, "load_prompts", lambda cfg, name: [
         {**SOURCE[0], "input": THAI, "input_en": SOURCE[0]["input"], "lang": "th", "translation": {"model": "q"}}])
     bodies = []
     client = mock_client(lambda p, b: completion("คำตอบ", reasoning="Because.", reasoning_tokens=5), bodies)
-    generate.run(cfg, "no_robots_th", n=1, out=tmp_path / "g.jsonl", client=client)
-    generate.run(cfg, "no_robots", n=1, out=tmp_path / "e.jsonl", client=client)
-    assert "ตอบเป็นภาษาไทย" in bodies[0]["messages"][0]["content"]
-    assert bodies[1]["messages"][0]["content"].startswith("You are a helpful assistant")
+    generate.run(CFG, "no_robots_th", n=1, out=tmp_path / "g.jsonl", client=client)
+    system, user = (m["content"] for m in bodies[0]["messages"])
+    assert "same language as the user's prompt" in system and user == THAI
     sample = report.read_jsonl(tmp_path / "g.jsonl")[0]
-    assert sample["prompt_version"] == "th1" and sample["lang"] == "th" and sample["input_en"].startswith("Name 3")
-    src = tmp_path / "raw.jsonl"
-    report.write_jsonl(src, [gen_row(0, source_dataset="no_robots_th"), gen_row(1)])
-    bodies.clear()
-    compress.run(cfg, src, tmp_path / "b.jsonl", client=mock_client(lambda p, b: completion("1. ขั้นตอน"), bodies))
-    users = sorted(b["messages"][1]["content"][:6] for b in bodies)
-    assert users == ["Questi", "คำถาม:"]
-    hashes = {r["source_dataset"]: r["compress_prompt_hash"] for r in report.read_jsonl(tmp_path / "b.jsonl")}
-    assert hashes["no_robots_th"] != hashes["no_robots"]
+    assert sample["lang"] == "th" and sample["input_en"].startswith("Name 3") and sample["translation"] == {"model": "q"}
 
 
 def test_thai_final_answers_and_words():

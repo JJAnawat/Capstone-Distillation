@@ -3,14 +3,11 @@
 # 1. Prep, for each set without data/prepared/<set>.jsonl: translate its new questions with TRANSLATOR (default:
 #    config translate.translator), the judge checks them, embeddings score them, build-translated writes the prepared
 #    file, and data/translate is backed up to the Hub.
-# 2. PROMPT_AB=1: the teacher prompt test (scripts/prompt_ab.sh), then stop so the arm can be chosen.
-#    Otherwise: distill every Thai set into data/full_th with pipeline.sh (variant B, set by set).
+# 2. Distill every Thai set into data/full_th with pipeline.sh (variant B, the English prompts, set by set).
 # Every step resumes, so the same command continues in the next GPU window.
-#   tmux new -s thai 'PROMPT_AB=1 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'
 #   tmux new -s thai 'bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'
 set -euo pipefail
 SETS=${SETS:-"no_robots_th helpsteer2_th ultrafeedback_th logiqa_th"}
-PROMPT_AB=${PROMPT_AB:-0}
 
 source scripts/lib.sh
 TRANSLATOR=${TRANSLATOR:-$(config_value "c['translate']['translator'] or ''")}
@@ -35,11 +32,5 @@ prep() {
 }
 
 prep
-if [ "$PROMPT_AB" = 1 ]; then
-  SETS="$SETS" bash scripts/prompt_ab.sh
-  echo "== choose the arm from reports/prompt_ab_{en,th}.md (Thai: prompt_versions on the *_th sets in config.yaml)," \
-       "then run this script without PROMPT_AB"
-  exit 0
-fi
 DATASETS="$SETS" LIMIT=0 BY_SET=1 VARIANTS=B VALIDATE=0 OUT=${OUT:-data/full_th} REPORT=${REPORT:-reports/full_th.md} \
   exec bash scripts/pipeline.sh

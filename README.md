@@ -24,7 +24,7 @@ distill/cli.py        command line
 config.yaml           every setting: models, servers, sampling, thresholds, datasets
 prompts/              versioned templates: {name}_{version}.txt
 scripts/              pipeline.sh (+ lib.sh), run_pilot.sh / run_full.sh / bench.sh / vm_check.sh / collect.sh (GPU VM),
-                      translate_compare.sh / run_thai.sh / prompt_ab.sh (Thai sets, GPU VM), smoke_openrouter.sh (laptop)
+                      translate_compare.sh / run_thai.sh (Thai sets, GPU VM), smoke_openrouter.sh (laptop)
 ```
 
 ## Pipeline
@@ -330,18 +330,19 @@ About 6k Thai rows are added next to the English ones (about 1:2). The English r
   - `check-translation`: the judge (Gemma, temperature 0, JSON schema) answers `english_only` (the task depends on
     English itself: grammar, rhyme, wordplay, letter counts, translating into another language), `fluency` and
     `meaning` (1–5). `meaning` comes last, so its logprobs give `meaning_expected`.
-  - `similarity`: the cosine of the English and Thai prompt in BGE-M3 (CPU, extra `qe`).
+  - `similarity`: the cosine of the English and Thai prompt in BGE-M3 (extra `qe`). It runs on the GPU when one is
+    free (the scripts run it with no server up), else on CPU.
   - `build-translated` drops a translation with any rule flag, `english_only`, no check, or a score below
     `translate.min_meaning` / `min_similarity` (thresholds set from the comparison; null = not applied).
 - **Later stages:** `rate` rates the English original (`input_en`), so the levels match the English rows. Thai
   rationales are counted in PyThaiNLP words, and the filter also checks the rationale's language. `verify` accepts
   `คำตอบสุดท้าย:` as well as `Final answer:`.
-- **Teacher prompts:** the English ones by default. Thai versions (`open_th1`, `open_closed_th1`, `compress_th1`)
-  are used when a set has `prompt_versions: {open: th1, compress: th1}`; the prompt test decides.
+- **Teacher prompts:** the English ones (`open_v2`, `open_closed_v2`, `compress_v3`). They already ask for the
+  language of the question, so Qwen answers and compresses in Thai.
 
 **Translator comparison** (once, before the Thai run): the first `translate.compare_limit` (13) prompts of each set,
 translated by Qwen (teacher), Gemma (judge) and Typhoon Translate 1.5 (role `typhoon`; comparison only). That makes
-150 translations.
+52 prompts and 156 translations.
 ```bash
 tmux new -s compare 'bash scripts/translate_compare.sh 2>&1 | tee -ai logs/compare.log'   # ~30 min of GPU
 # Grade reports/translate_compare.xlsx by hand: meaning and fluency 1-5 (sheet "how to grade"). Model names are
@@ -355,23 +356,19 @@ threshold tables, rule flags, the judge's self-preference. Set `translate.transl
 **Thai run:**
 ```bash
 distill translate --dataset logiqa_th --dry-run            # pool left after excluding the English ids; no server
-tmux new -s thai 'PROMPT_AB=1 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'   # prep + prompt test, then stops
-# compare reports/prompt_ab_en.md with prompt_ab_th.md; if Thai wins, set prompt_versions on the *_th sets
-tmux new -s thai 'bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'               # distill into data/full_th
+tmux new -s thai 'bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'   # prep, then distill into data/full_th
 ```
 `run_thai.sh` preps each set without a prepared file: translate, check, similarity, build, and a backup of
-`data/translate`. It then runs either `prompt_ab.sh` (13 prompts per set, English vs Thai teacher prompts, judged, a
-report per arm) or `pipeline.sh` on the Thai sets (`LIMIT=0 BY_SET=1 VARIANTS=B OUT=data/full_th`). Everything
-resumes.
+`data/translate`. Then it runs `pipeline.sh` on the Thai sets (`LIMIT=0 BY_SET=1 VARIANTS=B OUT=data/full_th`).
+Everything resumes, so the same command continues in the next GPU window.
 
 Single steps:
 ```bash
 distill translate --dataset no_robots_th --translator teacher [--limit 13 --no-reference --out FILE]
 distill check-translation data/translate/no_robots_th.jsonl      # judge server; -> .check.jsonl
-distill similarity data/translate/no_robots_th.jsonl             # CPU; -> .similarity.jsonl
+distill similarity data/translate/no_robots_th.jsonl             # no server up; -> .similarity.jsonl
 distill build-translated --dataset no_robots_th                  # -> data/prepared/no_robots_th.jsonl
 distill compare-sheet FILE... --out reports/translate_compare.xlsx
-distill compress FILE --prompt-version th1 --out FILE            # one template version for every row
 ```
 
 **Translation record** (`data/translate/<set>.jsonl`): `id` (the English prompt's id), `dataset`, `source_dataset`,

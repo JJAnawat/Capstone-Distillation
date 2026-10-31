@@ -33,7 +33,9 @@ Thai sets first run translate → check-translation → similarity → build-tra
   - GPU time comes in windows the user announces (night 1 ended 10:00 Thailand time, 03:00 UTC). Light CPU work on
     the VM is fine outside them.
 - **Work is split into a CPU phase and a GPU phase** (user's rule, 2026-10-31). Claude finishes the CPU phase (code,
-  offline tests, laptop smoke test, VM setup and dry checks) and reports. Then the GPU steps run in the windows.
+  offline tests, VM setup and dry checks) and reports. Then the GPU steps run in the windows.
+- **No smoke tests** (the user, 2026-10-31): neither OpenRouter runs nor `LIMIT=5` trial runs. Offline tests and the
+  VM's dry checks cover the CPU phase.
 
 ## Key decisions and why
 - **Every training target is short CoT + answer, never Qwen's raw thinking.**
@@ -136,8 +138,9 @@ Thai sets first run translate → check-translation → similarity → build-tra
     - The grades pick the translator and calibrate the automatic check (the judge's meaning score, BGE-M3 cosine)
       and its thresholds.
     - Gemma both translates and checks, so the report shows its self-preference.
-  - **The teacher's prompt language is tested, not assumed:** English prompts vs Thai `*_th1`, on 13 prompts per set
-    after prep. Claude leaned English (format following); Thai might stop compress writing English steps.
+  - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
+    the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
+    the filter rejects English rationales for Thai questions.
   - The judge rubric stays English. Thai rows keep `input_en` and the English id, and have their own Hub subsets
     (`final_th`, `final_th_closed`).
 - **Judge:** a pointwise rubric over reasoning + answer on a 1–9 scale. A single digit is a single token, so logprobs
@@ -146,8 +149,8 @@ Thai sets first run translate → check-translation → similarity → build-tra
 ## Commands
 - Laptop: `uv venv --python 3.12 && uv pip install -e ".[dev]"`, then `uv run pytest`.
 - Laptop smoke test (Git Bash; needs `OPENROUTER_API_KEY` in `.env`; costs cents): `bash scripts/smoke_openrouter.sh`.
-- Thai sets on the VM: `scripts/translate_compare.sh` (comparison), then `PROMPT_AB=1 bash scripts/run_thai.sh`
-  (prep + prompt test), then `bash scripts/run_thai.sh` (distill). README "Thai sets".
+- Thai sets on the VM: `scripts/translate_compare.sh` (comparison), then `bash scripts/run_thai.sh` (prep, then
+  distill). README "Thai sets".
 - VM: the README's "VM sessions" section. Session 1: `vm_check.sh`, install, download, a `LIMIT=5` smoke run.
   Session 2: `run_pilot.sh`. Session 3: `bench.sh` and judge validation with thinking on. Each session ends with
   `scripts/collect.sh <name> <out_dir>`, then a commit and push of `reports/`.
@@ -210,13 +213,13 @@ Thai sets first run translate → check-translation → similarity → build-tra
     ran on.
 - **VM disk:** the root disk `/` (495 GB) belongs to others. It had 1.0 GB free on 2026-10-27 and 52 GB on
   2026-10-31.
-  - Earlier notes said nothing of ours lives there; that was wrong. `/home/aicookie` is a real directory (not our
-    `$HOME`) holding an old clone, `/home/aicookie/Capstone-Distillation` (9.7 GB, at a9cff7c), with its own venv.
-  - **The repo's venv was copied from it**, so 55 scripts in `.venv/bin` still have `#!/home/aicookie/...`
-    shebangs and run the old venv. `vllm` is one of them (both venvs have vLLM 0.32.0), and so are `pytest` and
-    `hf`. Reinstalled packages (`distill`) point at the right venv.
-  - Use `.venv/bin/python -m pytest`. Don't delete the old clone until those shebangs are rewritten, or
-    `vllm serve` breaks.
+  - **The repo is `/lambda/nfs/Fusion-SFT/aicookie/Capstone-Distillation`** (`$HOME/Capstone-Distillation`). Run
+    `pwd` first over SSH and work only there. `/home/aicookie/Capstone-Distillation` is an old, deprecated clone
+    (9.7 GB on the root disk, at a9cff7c, with its own venv). `/home/aicookie` is a real directory, not `$HOME`.
+  - The repo's venv had been copied from that clone. Until 2026-10-31, 60 files in `.venv/bin` still pointed at
+    the old path, so every script ran the old venv's `distill` and `vllm`: the `activate` script's `VIRTUAL_ENV`
+    and the shebangs of `vllm`, `hf`, `pytest` and others. They were rewritten that day, and nothing points there
+    now.
   - `aicookie`'s home is on the shared virtiofs mount (`/lambda/nfs/Fusion-SFT/aicookie`, owned by us and
     writable), so the repo, venv and pipeline outputs are already there. Earlier notes said the share was off-limits;
     that was wrong. Only the share's top level needs the `fusion` group, which we don't have and don't need.
@@ -241,18 +244,16 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 ## Status (2026-10-31)
 - **Built and in use on the VM:** the full pipeline, with resume, clean Ctrl-C, per-set mode, the shared-GPU fit,
   and the Hub backup with its dataset card.
-- **Thai sets: the CPU phase is built** (2026-10-31): `distill/translate.py`, the Thai prompts, the scripts and the
-  Thai-aware filter, select, verify and hub. 133 offline tests.
-  - The Thai teacher prompts (`prompts/*_th1.txt`) are Claude's drafts; the user reviews their wording.
+- **Thai sets: the CPU phase is done** (2026-10-31): `distill/translate.py`, the scripts and the Thai-aware filter,
+  select, verify and hub. The teacher keeps its English prompts.
   - **The VM is ready:**
-    - it has pulled a9ee5ab and installed the `qe` extra (sentence-transformers 6.2.0; vLLM, torch and transformers
-      unchanged);
-    - Typhoon Translate 1.5 and BGE-M3 are in `~/hf`, and BGE-M3 works on the CPU (about 1 min including the load);
-    - 133 tests pass there.
+    - it has installed the `qe` extra (sentence-transformers 6.2.0; vLLM, torch and transformers unchanged);
+    - Typhoon Translate 1.5 and BGE-M3 are in `~/hf`, and BGE-M3 works there;
+    - the venv no longer points at the old clone (Gotchas), and the tests pass there.
   - **Dry pool check** (the same on both machines), unused prompts left vs the limit: No Robots 6,205 / 1,400,
     HelpSteer2 4,692 / 1,400, UltraFeedback open 48,572 / 1,400, LogiQA 9,178 / 1,650.
-  - **The laptop smoke test was skipped:** the OpenRouter key in `.env` has expired (HTTP 401, nothing charged).
-    The laptop now has the VM's ratings files in `data/prepared/`.
+  - The laptop has the VM's ratings files in `data/prepared/`. Its OpenRouter key has expired, and no smoke tests
+    are wanted anyway.
 - **Pilot (2026-10-22: 100 prompts per set, N=8; reports/pilot2.md, reports/judge_validation.md):**
   - **Judge:** HelpSteer2 agreement was 71.0% for v1 and 70.2% for v2. v2 stays for its wider score spread.
   - **Judge vs rules on closed questions:** AUC about 0.5, mostly from noisy FLAN golds. A small human audit is
@@ -273,10 +274,13 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   1. G1, the translator comparison: `scripts/translate_compare.sh` (~30 min). The user grades
      `reports/translate_compare.xlsx`, then `distill compare-report` picks the translator and the thresholds, which
      go into `config.yaml`. If Typhoon wins, settle its license first.
-  2. G2: `PROMPT_AB=1 bash scripts/run_thai.sh`, the prep and the prompt test (~1.5 h). Choose the prompt arm
-     together.
-  3. G3: `bash scripts/run_thai.sh`, the distillation (~8–9.5 h, two windows). Look at the first finished set's rows
-     before the rest run.
+  2. G2: `bash scripts/run_thai.sh`, about 10–12 GPU hours over two long windows. Look at the first finished set's
+     rows before the rest run.
+     - Prep takes about 1–1.5 h: translate about 5,850 questions plus the judge's references, check them, embed,
+       build.
+     - Distillation takes about 9–10.5 h. That is about 7.6 h of stage time at the English run's measured rates
+       (open sets 3.8–4.9 s per prompt, LogiQA 7.7 s), plus about 20 min per set for two server starts, rating,
+       filter and backup, plus some 10–20% for Thai costing more Qwen tokens.
 - **Also open with the user** (no GPU): LogiQA's verbose answers (Night 3 above): `answer` often repeats the
   rationale. And how a row maps onto the student's chat template, which belongs to the training stage.
 - **Models moved off /dev/shm (2026-10-27):** `.vm_env` now sets `HF_HOME=$HOME/hf` and

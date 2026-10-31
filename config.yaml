@@ -141,7 +141,7 @@ translate:
   # Low temperature for a faithful translation (Typhoon's card uses 0.2). Every field is sent, as for sampling above.
   sampling: {temperature: 0.2, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.0}
   compare_limit: 13        # prompts per Thai set in the comparison: 4 sets, ~50 prompts, 3 translators
-  embed_model: BAAI/bge-m3 # `similarity`: cosine of the English and Thai prompt, on CPU (extra `qe`)
+  embed_model: BAAI/bge-m3 # `similarity`: cosine of the English and Thai prompt, GPU if free, else CPU (extra `qe`)
   min_meaning: null        # the judge's expected meaning score (1-5) a translation needs; set from the comparison
   min_similarity: null     # the cosine a translation needs; set from the comparison
   # Rule checks on every translation (translate.rule_flags). The length ratio is Thai / English characters.
@@ -197,7 +197,7 @@ datasets:
   # Thai sets, built by `distill build-translated` (`prepare` skips them). Their questions were never used in English:
   # ids in the source's ratings file are excluded. Limits aim at half of each English set's final rows, plus ~10% for
   # dropped translations; UltraFeedback closed is left out (noisy golds, English-bound tasks), and its share goes to
-  # LogiQA. `prompt_versions: {open: th1, compress: th1}` here would switch a set to the Thai teacher prompts.
+  # LogiQA. The teacher keeps its English prompts, which ask for the prompt's language.
   no_robots_th: {translate: {from: no_robots, only: open, limit: 1400}}
   helpsteer2_th: {translate: {from: helpsteer2, only: open, limit: 1400}}
   ultrafeedback_th: {translate: {from: ultrafeedback, only: open, limit: 1400}}

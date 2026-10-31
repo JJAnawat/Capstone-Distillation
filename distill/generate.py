@@ -24,11 +24,6 @@ def load_templates(mode, version):
     return base, base
 
 
-def prompt_version_for(cfg, dataset, name, default):
-    """The dataset's own template version (`prompt_versions` in its config, e.g. th1 for a Thai set), else `default`."""
-    return ((cfg["datasets"].get(dataset) or {}).get("prompt_versions") or {}).get(name, default)
-
-
 def step_limit(cfg, level):
     """(max steps, max words) for a rationale, from the prompt's complexity rating (DeReason's step ranges)."""
     c = cfg["cot"]
@@ -100,7 +95,7 @@ def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tok
     ep["model"] = model or ep["model"]
     seed = g["seed"] if seed is None else seed
     max_tokens = max_tokens or (cfg["cot"]["max_tokens"] if mode == "cot" else g["max_tokens"])
-    prompt_version = prompt_version or prompt_version_for(cfg, dataset, mode, g["prompt_versions"][mode])
+    prompt_version = prompt_version or g["prompt_versions"][mode]
     sampling = cfg["sampling"]["thinking_on" if thinking else "thinking_off"]
     open_tmpl, closed_tmpl = load_templates(mode, prompt_version)
 

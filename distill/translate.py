@@ -202,8 +202,8 @@ def cosine(a, b):
 
 
 def similarity(cfg, path, encode=None, batch=32):
-    """Cosine similarity of the English and Thai prompt in a multilingual embedding space (BGE-M3 by default), on
-    CPU. Writes <stem>.similarity.jsonl."""
+    """Cosine similarity of the English and Thai prompt in a multilingual embedding space (BGE-M3 by default), on the
+    GPU when there is one (the scripts run it with no server up), else on CPU. Writes <stem>.similarity.jsonl."""
     out = f"{stem(path)}.similarity.jsonl"
     done = {rid for rid, _ in read_done_keys(out)}
     todo = [r for r in report.iter_jsonl(path) if r["id"] not in done and (r.get("input") or "").strip()]
@@ -213,7 +213,7 @@ def similarity(cfg, path, encode=None, batch=32):
     name = cfg["translate"]["embed_model"]
     if encode is None:
         from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer(name, device="cpu")
+        model = SentenceTransformer(name)  # picks the GPU if there is one
         model.max_seq_length = 1024  # both texts are cut the same way; long prompts keep their opening
         encode = lambda texts: model.encode(texts, batch_size=8, normalize_embeddings=True)
     with open(out, "a", encoding="utf-8") as f:
