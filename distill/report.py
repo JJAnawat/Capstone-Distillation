@@ -100,7 +100,7 @@ def best_scores(groups):
 def group_stats(rows, min_score, student=None):
     prompts = by_prompt(rows)
     rt, at = [r.get("reasoning_tokens", 0) for r in rows], [r.get("answer_tokens", 0) for r in rows]
-    rw = [len((r.get("rationale") or "").split()) for r in rows]
+    rw = [len(verify.words(r.get("rationale"))) for r in rows]
     stats = {
         "samples / prompts": f"{len(rows)} / {len(prompts)}",
         "raw reasoning tokens median / p90": f"{pct(rt, 50)} / {pct(rt, 90)}",
@@ -341,9 +341,10 @@ def rejection_reasons(r, fcfg, max_reasoning_tokens=None, max_rationale_words=No
     if r.get("finish_reason") != "stop":
         reasons.append("finish_not_stop")
     if answer.strip() and not any(re.search(p, r["input"], re.I) for p in fcfg["language_skip_patterns"]):
+        # The rationale too: compress may write English steps for a Thai question from an English thinking trace.
         lp = detect_language(r["input"], fcfg["language"]["min_chars"])
-        la = detect_language(answer, fcfg["language"]["min_chars"])
-        if lp and la and lp != la:
+        found = [detect_language(t, fcfg["language"]["min_chars"]) for t in (answer, rationale)]
+        if lp and any(la and la != lp for la in found):
             reasons.append("language_mismatch")
     rep = fcfg["repetition"]
     # Raw thinking is not trained on once a rationale replaces it, so only legacy rows have it checked.
@@ -358,7 +359,7 @@ def rejection_reasons(r, fcfg, max_reasoning_tokens=None, max_rationale_words=No
         reasons.append("reasoning_too_long")
     if r.get("cot_method") and not rationale.strip():
         reasons.append("missing_rationale")
-    if max_rationale_words and len(rationale.split()) > max_rationale_words:
+    if max_rationale_words and len(verify.words(rationale)) > max_rationale_words:
         reasons.append("rationale_too_long")
     if student and student_tokens(r, student[0]) > student[1]:
         reasons.append("over_student_budget")

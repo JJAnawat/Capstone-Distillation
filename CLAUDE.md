@@ -12,11 +12,13 @@ Capstone: turn a tiny Thai model into a small **reasoning model** by distilling 
 - **Goal:** better non-math logical reasoning, instruction following and safety (refuse harmful requests without
   over-refusing). Don't change the architecture, and don't hurt Thai fluency or inference efficiency. Math isn't a
   target skill, but the math items in the existing datasets are still distilled (user's call).
-- **This repo is stage 1:** teacher data generation. Training and translation into Thai are separate stages.
-  Translation is undecided, so generation is in English for now.
+- **This repo is stage 1:** teacher data generation. Training is a separate stage. The English set is done; a **Thai
+  set** is being added by translating new questions first and then distilling them (decided 2026-10-31, see Key
+  decisions).
 
 ## Pipeline (details in README.md)
 prepare → rate → generate → compress (variant B only) → filter → judge → select → analyze
+Thai sets first run translate → check-translation → similarity → build-translated, then the same stages.
 - **Teacher:** Qwen3.5-9B (bf16) behind `vllm serve`. **Judge:** Gemma 4 31B QAT W4A16 behind `vllm serve`.
   They can't share the A100 40GB, so teacher stages and judge stages run as separate GPU phases.
 - **OpenRouter** is a second backend (`--backend openrouter`), used for laptop smoke tests.
@@ -30,6 +32,8 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - Code gets there by commit, push, then `git pull` on the VM.
   - GPU time comes in windows the user announces (night 1 ended 10:00 Thailand time, 03:00 UTC). Light CPU work on
     the VM is fine outside them.
+- **Work is split into a CPU phase and a GPU phase** (user's rule, 2026-10-31). Claude finishes the CPU phase (code,
+  offline tests, laptop smoke test, VM setup and dry checks) and reports. Then the GPU steps run in the windows.
 
 ## Key decisions and why
 - **Every training target is short CoT + answer, never Qwen's raw thinking.**
@@ -113,12 +117,37 @@ prepare → rate → generate → compress (variant B only) → filter → judge
   - Every question is rated 1–5 with the DeReason prompt (Hu et al. 2026, arXiv:2603.11193, App. A.1).
   - `select` writes the data from easy to hard.
   - The paper's split (SFT on levels ≤3, RL on ≥4) is left to the training stage.
+- **Thai sets** (discussed with the user, 2026-10-31; README "Thai sets" has the mechanics).
+  - **Added next to the English rows, about 1:2** (about 6.2k Thai rows), not a re-translation of them. The ratio
+    used in training is the training stage's choice.
+  - **Translate the question first, then distill** (the user's research): Qwen writes the Thai rationale and answer
+    itself, so no target is translated text. Variant B fits this: Qwen can think in English, and compress writes
+    the Thai steps.
+  - **Questions never used in English** (the user's choice over pairing). The ids in the source's ratings file are
+    excluded, because every English question was rated first. Offsets were rejected: ids are explicit.
+  - **Each Thai set gets half its English set's rows.** UltraFeedback closed is skipped (noisy golds, English-bound
+    FLAN tasks, short golds translate badly), and its share goes to LogiQA.
+  - **The reference answer is translated only for the judge and the golds.**
+  - **Prompts bound to English are flagged and dropped:** the judge's `english_only`, plus the
+    `language_skip_patterns` rule.
+  - **Translator comparison:** about 50 prompts (13 per set) by Qwen, Gemma and Typhoon Translate 1.5. **The user
+    grades all 150 translations by hand** (meaning 1–5, fluency 1–5) in an .xlsx, blind.
+    - The user cut it from 100 prompts; it is the only translation pilot.
+    - The grades pick the translator and calibrate the automatic check (the judge's meaning score, BGE-M3 cosine)
+      and its thresholds.
+    - Gemma both translates and checks, so the report shows its self-preference.
+  - **The teacher's prompt language is tested, not assumed:** English prompts vs Thai `*_th1`, on 13 prompts per set
+    after prep. Claude leaned English (format following); Thai might stop compress writing English steps.
+  - The judge rubric stays English. Thai rows keep `input_en` and the English id, and have their own Hub subsets
+    (`final_th`, `final_th_closed`).
 - **Judge:** a pointwise rubric over reasoning + answer on a 1–9 scale. A single digit is a single token, so logprobs
   give an expected score that breaks ties. It is checked against HelpSteer2 human preferences (`judge --validate`).
 
 ## Commands
 - Laptop: `uv venv --python 3.12 && uv pip install -e ".[dev]"`, then `uv run pytest`.
 - Laptop smoke test (Git Bash; needs `OPENROUTER_API_KEY` in `.env`; costs cents): `bash scripts/smoke_openrouter.sh`.
+- Thai sets on the VM: `scripts/translate_compare.sh` (comparison), then `PROMPT_AB=1 bash scripts/run_thai.sh`
+  (prep + prompt test), then `bash scripts/run_thai.sh` (distill). README "Thai sets".
 - VM: the README's "VM sessions" section. Session 1: `vm_check.sh`, install, download, a `LIMIT=5` smoke run.
   Session 2: `run_pilot.sh`. Session 3: `bench.sh` and judge validation with thinking on. Each session ends with
   `scripts/collect.sh <name> <out_dir>`, then a commit and push of `reports/`.
@@ -150,7 +179,7 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 - `.sh` files must keep LF line endings (`.gitattributes`), or bash on the VM fails with `$'\r'`.
 - Don't `git pull` on the VM while a pipeline script runs: bash reads scripts as it executes them.
 - In Git Bash, Python heredocs that rewrite files turned escape sequences into real newlines. Use the Edit tool for
-  text that contains them.
+  text that contains them. `sed`'s `c\` command drops backslashes too.
 - **Ctrl-C in a tmux pane** sends SIGINT to every process in it, vLLM included.
   - On 2026-10-23 vLLM then waited for its open connections while `generate` waited, on the same connections, for
     replies that never came. That deadlock lasts until the 2 h request timeout.
@@ -202,9 +231,12 @@ prepare → rate → generate → compress (variant B only) → filter → judge
 No Robots is CC BY-NC 4.0: everything derived from it is non-commercial, so keep `source_dataset` on every row.
 Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 
-## Status (2026-10-28)
+## Status (2026-10-31)
 - **Built and in use on the VM:** the full pipeline, with resume, clean Ctrl-C, per-set mode, the shared-GPU fit,
-  and the Hub backup with its dataset card. 104 offline tests.
+  and the Hub backup with its dataset card.
+- **Thai sets: the CPU phase is built** (2026-10-31): `distill/translate.py`, the Thai prompts, the scripts and the
+  Thai-aware filter, select, verify and hub. 133 offline tests.
+  - The Thai teacher prompts (`prompts/*_th1.txt`) are Claude's drafts; the user reviews their wording.
 - **Pilot (2026-10-22: 100 prompts per set, N=8; reports/pilot2.md, reports/judge_validation.md):**
   - **Judge:** HelpSteer2 agreement was 71.0% for v1 and 70.2% for v2. v2 stays for its wider score spread.
   - **Judge vs rules on closed questions:** AUC about 0.5, mostly from noisy FLAN golds. A small human audit is
@@ -221,12 +253,16 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 - **Nothing runs on the VM now:** no tmux sessions, and none of our processes on the GPU. Stage 1's output is data,
   not a model. The teacher, judge and student are unchanged downloads in `~/hf` on the VM. The user asked where
   "the model" was, so say this plainly.
-- **Next, with the user** (no GPU needed):
-  1. Review `reports/full.md` and some samples, LogiQA's verbose answers first (Night 3 above). For multiple-choice
-     questions, `answer` often repeats the rationale. Should it shrink to the conclusion and the letter?
-  2. Decide how a row maps onto the student's chat template, and whether to translate into Thai first. Both belong
-     to the training and translation stages.
-  3. The open items below.
+- **Next: the Thai GPU phase**, in the user's windows:
+  1. G1, the translator comparison: `scripts/translate_compare.sh` (~30 min). The user grades
+     `reports/translate_compare.xlsx`, then `distill compare-report` picks the translator and the thresholds, which
+     go into `config.yaml`. If Typhoon wins, settle its license first.
+  2. G2: `PROMPT_AB=1 bash scripts/run_thai.sh`, the prep and the prompt test (~1.5 h). Choose the prompt arm
+     together.
+  3. G3: `bash scripts/run_thai.sh`, the distillation (~8–9.5 h, two windows). Look at the first finished set's rows
+     before the rest run.
+- **Also open with the user** (no GPU): LogiQA's verbose answers (Night 3 above): `answer` often repeats the
+  rationale. And how a row maps onto the student's chat template, which belongs to the training stage.
 - **Models moved off /dev/shm (2026-10-27):** `.vm_env` now sets `HF_HOME=$HOME/hf` and
   `VLLM_CACHE_ROOT=$HOME/vllm-cache` (the old file is `.vm_env.bak-shm`), and both models are in `~/hf` (40 GB;
   the files sit in `hub/blobs`, so per-model `du` looks tiny). The home now holds 53 GB. Loading from the share
@@ -234,6 +270,5 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 - **Open, later:**
   - judge validation with thinking on;
   - the closed-gold audit;
-  - Thai translation (undecided);
   - the licensing TODOs in docs/LICENSES.md.
 - **Left to the user:** narrow the VM token to the dataset repo only, and delete the old `JuyJuy` token.

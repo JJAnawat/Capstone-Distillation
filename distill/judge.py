@@ -69,37 +69,43 @@ def judge_messages(system, user, prompt, reference, rationale, answer):
             {"role": "user", "content": user.format(prompt=prompt, reference_block=ref, response=response)}]
 
 
-def judge_body(ep, jc, messages):
-    extra = {"response_format": {"type": "json_schema", "json_schema": {"name": "grade", "strict": True,
-                                                                        "schema": SCHEMA}}}
+def judge_body(ep, jc, messages, schema=SCHEMA, name="grade"):
+    extra = {"response_format": {"type": "json_schema", "json_schema": {"name": name, "strict": True,
+                                                                        "schema": schema}}}
     if ep.get("logprobs"):
         extra |= {"logprobs": True, "top_logprobs": 10}
     return server.build_body(ep, messages, {"temperature": jc["temperature"]}, jc["thinking"], 0, jc["max_tokens"],
                              **extra)
 
 
-def expected_score(logprobs, score):
-    """Probability-weighted mean of the digit alternatives at the score token; `score` itself without logprobs."""
+def expected_score(logprobs, score, digits=DIGITS):
+    """Probability-weighted mean of the digit alternatives at the score token (the last token that is the score);
+    `score` itself without logprobs."""
     for t in reversed((logprobs or {}).get("content") or []):
         if t["token"].strip() == str(score):
             probs = defaultdict(float)
             for alt in t.get("top_logprobs") or []:
-                if alt["token"].strip() in DIGITS:
+                if alt["token"].strip() in digits:
                     probs[int(alt["token"].strip())] += math.exp(alt["logprob"])
             total = sum(probs.values())
             return sum(d * p for d, p in probs.items()) / total if total else float(score)
     return float(score)
 
 
+def reply_json(choice):
+    """The JSON object in a judge reply ({} if none), after Gemma's empty thought block is stripped."""
+    content = re.sub(r"<\|channel>.*?<channel\|>", "", choice["message"].get("content") or "", flags=re.S)
+    m = re.search(r"\{.*\}", content, re.S)
+    return json.loads(m.group(0)) if m else {}
+
+
 def parse_grade(j):
     """(score, expected score, critique); raises ValueError when the reply holds no valid score."""
     choice = j["choices"][0]
-    content = re.sub(r"<\|channel>.*?<channel\|>", "", choice["message"].get("content") or "", flags=re.S)
-    m = re.search(r"\{.*\}", content, re.S)
-    grade = json.loads(m.group(0)) if m else {}
+    grade = reply_json(choice)
     score = grade.get("score")
     if not isinstance(score, int) or not 1 <= score <= 9:
-        raise ValueError(f"no valid score in judge reply: {content[:200]!r}")
+        raise ValueError(f"no valid score in judge reply: {(choice['message'].get('content') or '')[:200]!r}")
     return score, expected_score(choice.get("logprobs"), score), str(grade.get("critique", ""))
 
 

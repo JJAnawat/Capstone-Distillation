@@ -1,7 +1,7 @@
 # Licenses
 
 Licenses were checked against the `license:` field of each Hugging Face card on 2026-10-13.
-We use only the prompt text as model input. Original responses and ratings are used only to pick hint references and to spot-check outputs. They never appear as output.
+We use only the prompt text as model input. Original responses and ratings are used only to pick hint references and to spot-check outputs. They never appear as output. For the Thai sets, prompts and those references are translated; the translated references still only feed the judge.
 
 | Item | License | Source | Allowed for our use? | Notes |
 |---|---|---|---|---|
@@ -12,6 +12,10 @@ We use only the prompt text as model input. Original responses and ratings are u
 | Teacher: Qwen/Qwen3.5-9B | Apache-2.0 (per HF card) | https://huggingface.co/Qwen/Qwen3.5-9B | **TODO: human to check** | Confirm that using the outputs to train another model is permitted. Run locally with vLLM from 2026-10-18. |
 | Judge: google/gemma-4-31B-it-qat-w4a16-ct (local) and google/gemma-4-31b-it (OpenRouter) | Apache-2.0 (per HF card, checked 2026-10-18) | https://huggingface.co/google/gemma-4-31B-it-qat-w4a16-ct | Yes | Only its scores and critiques are used, to select samples. Its outputs are never training targets. |
 | Student: wongwian-org/wongwian-micro-instruct | MIT (per HF card, checked 2026-10-18) | https://huggingface.co/wongwian-org/wongwian-micro-instruct | Yes | Only its tokenizer is used here, to check that samples fit its 2,048-token context. |
+| Thai sets (`*_th`): translated prompts and the rows distilled from them | Each inherits its source's license | the source datasets above | Yes, on the source's terms | A translation is a derivative: `no_robots_th` is **non-commercial**, `logiqa_th` **non-commercial and share-alike** (CC BY-NC-SA 4.0). `source_dataset` names the set. The translated prompts are model outputs used as inputs, so the translator's terms apply too (rows below). Translated reference answers only feed the judge. |
+| Translator candidate: typhoon-ai/typhoon-translate1.5-4b | **Unclear** (checked 2026-10-31): the HF metadata says apache-2.0, the card text says Gemma License, and the card requires agreeing to the OpenTyphoon Terms and Conditions | https://huggingface.co/typhoon-ai/typhoon-translate1.5-4b, https://opentyphoon.ai/tac | Comparison only. **TODO: human to check** before its translations go into training data | Used in the 50-prompt translator comparison. If it wins, settle the license first. Qwen (teacher row above) or Gemma (Apache-2.0) are the alternatives. |
+| BAAI/bge-m3 | MIT (per HF card) | https://huggingface.co/BAAI/bge-m3 | Yes | Only its embeddings are used, to score how close a translation is to the English prompt. |
+| PyThaiNLP | Apache-2.0 | https://github.com/PyThaiNLP/pythainlp | Yes | A library: Thai word counts in the filter and selection. |
 | Reasoning Complexity Rating Prompt | Quoted from Hu et al. (2026), "DeReason", arXiv:2603.11193, Appendix A.1 | https://arxiv.org/abs/2603.11193 | Yes, with citation | Reproduced verbatim in `prompts/rate_v1.txt` and cited in `distill/rate.py` and the README. |
 | HelpSteer2 validation split (judge validation) | CC BY 4.0 | https://huggingface.co/datasets/nvidia/HelpSteer2 | Yes | Used only to measure judge agreement with human ratings; never generated from. |
 | OpenRouter terms of service | — | https://openrouter.ai/terms | **TODO: human to check** | Confirm the rules on using outputs for training. Applies only to data generated through OpenRouter: the 2026-10-13 pilot and laptop smoke tests. |

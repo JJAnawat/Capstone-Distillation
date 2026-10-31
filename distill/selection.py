@@ -10,7 +10,7 @@ from distill.report import STUDENT_TEMPLATE_TOKENS, iter_jsonl, judge_path, stud
 
 
 def trigrams(text):
-    words = text.lower().split()
+    words = verify.words(text.lower())
     return {tuple(words[i:i + 3]) for i in range(len(words) - 2)} or {tuple(words)}
 
 
@@ -57,7 +57,8 @@ def final_row(r, complexity, selection, count):
                "thinking_tokens": r.get("reasoning_tokens", 0),  # raw thinking (variant B), not in this file
                "reply_tokens": r.get("answer_tokens", 0),      # the visible reply; for A it includes the rationale
                "timestamp": r.get("timestamp")}
-    return {"id": r["id"], "sample_idx": r.get("sample_idx", 0), "source_dataset": r["source_dataset"],
+    translated = {k: r[k] for k in ("lang", "input_en", "translation") if r.get(k)}  # Thai rows only
+    return {"id": r["id"], "sample_idx": r.get("sample_idx", 0), "source_dataset": r["source_dataset"], **translated,
             "input": r["input"], "rationale": r.get("rationale") or "", "answer": r.get("answer") or "",
             "closed": bool(r.get("closed")), **({"gold": r["gold"]} if r.get("gold") else {}),
             "complexity": complexity, "max_steps": r.get("max_steps"), "n_steps": verify.count_steps(r.get("rationale")),
@@ -81,7 +82,7 @@ def run(cfg, in_path, out, order=None, min_score=None, count=None):
             "expected": j.get("expected_score", j.get("score")),
             "closed": bool(r.get("closed")),
             "correct": bool(r.get("closed")) and verify.is_correct(r["answer"], r.get("gold") or []),
-            "words": len(f"{r.get('rationale') or ''} {r.get('answer') or ''}".split()),
+            "words": len(verify.words(f"{r.get('rationale') or ''} {r.get('answer') or ''}")),
             "grams": trigrams(r.get("rationale") or "")})
 
     winners, stats, exact = {}, Counter(), exact_gold(cfg)

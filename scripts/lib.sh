@@ -45,5 +45,20 @@ stop_server() {  # shut the server down and wait until its processes have releas
   done
   echo "warning: our processes still hold the GPU after stopping the server: $(own_gpu_pids)" >&2
 }
+SERVER_DOWN=75   # distill's exit code when its server stopped answering (server.SERVER_DOWN_EXIT)
+with_server() {  # ROLE CMD...: run CMD; if the server died under it, restart the server and resume CMD (twice at most)
+  local role=$1 restarts=0 rc; shift
+  while true; do
+    rc=0; "$@" || rc=$?
+    if [ "$rc" -ne "$SERVER_DOWN" ] || [ "${BACKEND:-vllm}" != vllm ] || [ "$restarts" -ge 2 ]; then return "$rc"; fi
+    restarts=$((restarts + 1))
+    echo "== $(date -u +%H:%M) the $role server died; restarting it ($restarts of 2) and resuming" >&2
+    stop_server
+    start_server "$role"
+  done
+}
+config_value() {  # PYTHON_EXPR over the config `c`, e.g. config_value "c['translate']['compare_limit']"
+  python -c "import yaml; c = yaml.safe_load(open('${DISTILL_CONFIG:-config.yaml}', encoding='utf-8')); print($1)"
+}
 trap stop_server EXIT
 trap 'exit 130' INT TERM HUP  # Ctrl-C, kill or a closed tmux window: exit normally so the EXIT trap stops the server

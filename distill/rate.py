@@ -33,7 +33,8 @@ def run(cfg, dataset, only=None, limit=None, seed=None, concurrency=None, backen
 
     def work(r):
         messages = [{"role": "system", "content": system}] if system else []
-        messages.append({"role": "user", "content": user.format(question=r["input"])})
+        # A translated prompt is rated in its English original, so levels mean the same in both languages.
+        messages.append({"role": "user", "content": user.format(question=r.get("input_en") or r["input"])})
         body = server.build_body(ep, messages, {"temperature": rc["temperature"]}, False, seed, rc["max_tokens"])
         j = server.call_api(client, body, cfg["generate"]["max_retries"])
         msg = j["choices"][0]["message"]

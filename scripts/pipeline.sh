@@ -40,18 +40,6 @@ limit_args() {  # --limit for a set: LIMIT, or LIMIT_CLOSED for the closed set (
 NARG=(); if [ -n "$N" ]; then NARG=(--n "$N"); fi
 start() { if [ "$BACKEND" = vllm ]; then start_server "$1"; fi; }  # OpenRouter needs no local server
 stop() { stop_server; }
-SERVER_DOWN=75   # distill's exit code when its server stopped answering (server.SERVER_DOWN_EXIT)
-with_server() {  # ROLE CMD...: run CMD; if the server died under it, restart the server and resume CMD (twice at most)
-  local role=$1 restarts=0 rc; shift
-  while true; do
-    rc=0; "$@" || rc=$?
-    if [ "$rc" -ne "$SERVER_DOWN" ] || [ "$BACKEND" != vllm ] || [ "$restarts" -ge 2 ]; then return "$rc"; fi
-    restarts=$((restarts + 1))
-    echo "== $(date -u +%H:%M) the $role server died; restarting it ($restarts of 2) and resuming" >&2
-    stop_server
-    start_server "$role"
-  done
-}
 has() { [[ " $1 " == *" $2 "* ]]; }
 
 # Each set is dataset:subset, one per kind of prompt the dataset has: open, and closed (a known answer). UltraFeedback

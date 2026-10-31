@@ -83,11 +83,19 @@ def _logiqa(ds, cfg):
 LOADERS = {"no_robots": _no_robots, "helpsteer2": _helpsteer2, "ultrafeedback": _ultrafeedback, "logiqa": _logiqa}
 
 
+def translate_source(cfg, name):
+    """The `translate:` block of a translated dataset (from, only, limit), or None for a dataset loaded from the Hub."""
+    return (cfg["datasets"].get(name) or {}).get("translate")
+
+
 def exact_gold(cfg):
-    """Datasets whose gold answers are exact (`exact_gold: true`, e.g. LogiQA's option letter). There, a closed prompt
-    with no correct sample is dropped rather than judged: the judge could only pick among wrong answers. Other closed
-    prompts fall back to the judge, since a noisy gold may be right without matching exactly."""
-    return {name for name, d in cfg["datasets"].items() if d.get("exact_gold")}
+    """Datasets whose gold answers are exact (`exact_gold: true`, e.g. LogiQA's option letter), and their
+    translations. There, a closed prompt with no correct sample is dropped rather than judged: the judge could only
+    pick among wrong answers. Other closed prompts fall back to the judge, since a noisy gold may be right without
+    matching exactly."""
+    ds = cfg["datasets"]
+    return {name for name, d in ds.items()
+            if d.get("exact_gold") or ds.get((d.get("translate") or {}).get("from"), {}).get("exact_gold")}
 
 
 def is_closed(r, vcfg):
@@ -100,17 +108,18 @@ def prepare(cfg, only=None):
     """Load every dataset in config order, dedupe within and across them, write data/prepared/<name>.jsonl. With
     `only`, build just that dataset: the earlier datasets' prepared files supply the ids to dedupe against and stay
     as they are, so their samples (and runs in progress) do not change. Meant for a dataset added at the end.
-    A dataset with `closed: true` in its config is closed wherever it has gold answers."""
+    A dataset with `closed: true` in its config is closed wherever it has gold answers. Translated datasets
+    (`translate:`) are built by `distill build-translated` instead."""
     from datasets import load_dataset
 
-    names = list(cfg["datasets"])
+    names = [n for n in cfg["datasets"] if not translate_source(cfg, n)]
     if only and only not in names:
-        raise ValueError(f"unknown dataset {only}; config has {names}")
+        raise ValueError(f"unknown dataset {only}; config has {names} (translated sets: `distill build-translated`)")
     PREPARED_DIR.mkdir(parents=True, exist_ok=True)
     stats_path = PREPARED_DIR / "stats.json"
     seen = set()
     stats = json.loads(stats_path.read_text(encoding="utf-8")) if only and stats_path.exists() else {}
-    for name, dcfg in cfg["datasets"].items():
+    for name, dcfg in ((n, cfg["datasets"][n]) for n in names):
         if only and name != only:
             if names.index(name) < names.index(only):
                 with open(PREPARED_DIR / f"{name}.jsonl", encoding="utf-8") as f:
@@ -186,10 +195,10 @@ def by_complexity(table, level, default):
     return table.get(level, table.get(str(level), default)) if level is not None else default
 
 
-def select_rows(cfg, dataset, mode="open", only=None, limit=None, seed=0):
-    """The prompts a stage works on: hint-eligible ones in hint mode, optionally only closed or open ones, then a seeded
-    stratified sample. rate and generate get the same subset from the same arguments."""
-    rows = load_prompts(cfg, dataset)
+def select_rows(cfg, dataset, mode="open", only=None, limit=None, seed=0, exclude=frozenset()):
+    """The prompts a stage works on: hint-eligible ones in hint mode, optionally only closed or open ones, without the
+    ids in `exclude`, then a seeded stratified sample. rate and generate get the same subset from the same arguments."""
+    rows = [r for r in load_prompts(cfg, dataset) if r["id"] not in exclude]
     if mode == "hint":
         rows = [r for r in rows if r["hint_ok"]]
     if only:

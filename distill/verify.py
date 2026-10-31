@@ -1,12 +1,14 @@
 """Rule checks for closed-ended prompts: extract the final answer and compare it with the dataset's gold answers."""
 import math
 import re
+import unicodedata
 from fractions import Fraction
 
-FINAL = re.compile(r"final answer\s*[:：]\s*(.+)", re.I)
+FINAL = re.compile(r"(?:final answer|คำตอบสุดท้าย)\s*[:：]\s*(.+)", re.I)  # Thai answers may translate the marker
 NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?(?:/\d+)?")
 LATEX_WRAPPER = re.compile(r"\\(?:boxed|text|textbf|mathrm)\{([^{}]*)\}")
 STEP = re.compile(r"^\s*(?:step\s*)?\d+\s*[.):]", re.I)
+THAI = re.compile(r"[\u0E00-\u0E7F]")
 
 
 def extract_boxed(text):
@@ -37,9 +39,10 @@ def to_number(s):
 
 
 def normalize(s):
-    """Lowercase words without punctuation, markdown or articles (articles are kept if nothing else is left)."""
+    """Lowercase words without punctuation, markdown or articles (articles are kept if nothing else is left). Combining
+    marks stay, so Thai vowels and tone marks do not split a word."""
     s = LATEX_WRAPPER.sub(r"\1", s).lower()
-    words = "".join(ch if ch.isalnum() else " " for ch in s).split()
+    words = "".join(ch if ch.isalnum() or unicodedata.category(ch) == "Mn" else " " for ch in s).split()
     return " ".join([w for w in words if w not in ("a", "an", "the")] or words)
 
 
@@ -74,6 +77,22 @@ def split_steps(rationale):
         else:
             steps[-1] += " " + line
     return steps
+
+
+def thai_share(text):
+    """Share of Thai characters among the non-space characters of `text`."""
+    chars = sum(not c.isspace() for c in text or "")
+    return len(THAI.findall(text or "")) / chars if chars else 0.0
+
+
+def words(text):
+    """Words of `text`: split on spaces, or with PyThaiNLP's dictionary tokenizer for mostly Thai text, which puts
+    spaces only between phrases."""
+    text = text or ""
+    if thai_share(text) < 0.3:
+        return text.split()
+    from pythainlp.tokenize import word_tokenize
+    return [w for w in word_tokenize(text, engine="newmm", keep_whitespace=False) if w.strip()]
 
 
 def format_steps(rationale):

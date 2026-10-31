@@ -1,5 +1,6 @@
 """Command line entry point: distill prepare | subsets | serve | wait | rate | generate | compress | filter | judge |
-select | analyze | push."""
+select | analyze | push, and for the Thai sets translate | check-translation | similarity | build-translated |
+compare-sheet | compare-report."""
 import argparse
 import os
 import sys
@@ -7,9 +8,10 @@ import sys
 import yaml
 from dotenv import load_dotenv
 
-from distill import compress, data, generate, hub, judge, rate, report, selection, server
+from distill import compress, data, generate, hub, judge, rate, report, selection, server, translate
 
 BACKENDS = ["vllm", "openrouter"]
+ROLES = ["teacher", "judge", "typhoon"]  # typhoon: a translator in the comparison only
 ONLY_HELP = "only prompts with (closed) or without (open) a known short answer"
 
 
@@ -44,10 +46,9 @@ def run(argv=None):
         "--dataset", help="build only this dataset (one added at the end), deduped against the earlier ones")
     sub.add_parser("subsets", help="print which sets a dataset has: open and/or closed").add_argument("dataset")
 
-    sub.add_parser("serve", help="run `vllm serve` for the teacher or judge (GPU VM)").add_argument(
-        "role", choices=["teacher", "judge"])
+    sub.add_parser("serve", help="run `vllm serve` for a role (GPU VM)").add_argument("role", choices=ROLES)
     w = sub.add_parser("wait", help="block until the local vLLM server for a role is ready")
-    w.add_argument("role", choices=["teacher", "judge"])
+    w.add_argument("role", choices=ROLES)
     w.add_argument("--pid", type=int, help="server process to watch: fail at once if it exits")
 
     r = sub.add_parser("rate", help="rate each question's reasoning complexity 1-5 (DeReason prompt)")
@@ -80,6 +81,7 @@ def run(argv=None):
     c.add_argument("file")
     c.add_argument("--out", required=True)
     c.add_argument("--concurrency", type=int)
+    c.add_argument("--prompt-version", help="compress template version for every row (default: per dataset, config)")
     c.add_argument("--backend", choices=BACKENDS)
 
     a = sub.add_parser("analyze", help="write a Markdown report comparing variants, scores and lengths")
@@ -108,6 +110,31 @@ def run(argv=None):
     s.add_argument("--order", choices=["curriculum", "random"])
     s.add_argument("--min-score", type=int)
 
+    t = sub.add_parser("translate", help="translate a Thai set's new source questions (and judge references)")
+    t.add_argument("--dataset", required=True, help="a Thai set, e.g. no_robots_th")
+    t.add_argument("--translator", choices=ROLES, help="default: config translate.translator")
+    t.add_argument("--limit", type=int, help="first N of the set's sample (default: its config limit)")
+    t.add_argument("--no-reference", action="store_true", help="translate the prompt only (the comparison)")
+    t.add_argument("--out", help="default: data/translate/<dataset>.jsonl")
+    t.add_argument("--dry-run", action="store_true", help="print the pool and sample sizes; call no server")
+    t.add_argument("--concurrency", type=int)
+    t.add_argument("--backend", choices=BACKENDS)
+    ct = sub.add_parser("check-translation", help="judge: English-bound task?, fluency and meaning (1-5)")
+    ct.add_argument("files", nargs="+")
+    ct.add_argument("--concurrency", type=int)
+    ct.add_argument("--backend", choices=BACKENDS)
+    sub.add_parser("similarity", help="embedding cosine of English and Thai prompts (CPU)").add_argument(
+        "files", nargs="+")
+    bt = sub.add_parser("build-translated", help="write data/prepared/<dataset>.jsonl from checked translations")
+    bt.add_argument("--dataset", required=True)
+    bt.add_argument("--file", help="default: data/translate/<dataset>.jsonl")
+    cs = sub.add_parser("compare-sheet", help="grading sheet (.xlsx) for the translator comparison")
+    cs.add_argument("files", nargs="+")
+    cs.add_argument("--out", default="reports/translate_compare.xlsx")
+    cr = sub.add_parser("compare-report", help="read the graded sheet and write the comparison report")
+    cr.add_argument("xlsx")
+    cr.add_argument("--out", default="reports/translate_compare.md")
+
     p = sub.add_parser("push", help="back up a run and the ratings to a private Hugging Face dataset repo")
     p.add_argument("out", help="the run's output directory, e.g. data/full")
     p.add_argument("--repo", help="dataset repo id (default: config hub.repo)")
@@ -133,7 +160,8 @@ def run(argv=None):
                      max_cost=args.max_cost, include_reference=args.include_reference, model=args.model,
                      prompt_version=args.prompt_version, only=args.only, backend=args.backend)
     elif args.cmd == "compress":
-        compress.run(cfg, args.file, args.out, concurrency=args.concurrency, backend=args.backend)
+        compress.run(cfg, args.file, args.out, concurrency=args.concurrency, backend=args.backend,
+                     prompt_version=args.prompt_version)
     elif args.cmd == "analyze":
         report.analyze(args.files, args.out, min_score=cfg["select"]["min_score"], student=cfg["student"]["tokenizer"])
     elif args.cmd == "filter":
@@ -152,6 +180,22 @@ def run(argv=None):
                       thinking=thinking, prompt_version=args.prompt_version)
     elif args.cmd == "select":
         selection.run(cfg, args.file, args.out, order=args.order, min_score=args.min_score)
+    elif args.cmd == "translate":
+        translate.run(cfg, args.dataset, args.translator, limit=args.limit, out=args.out,
+                      reference=not args.no_reference, concurrency=args.concurrency, backend=args.backend,
+                      dry_run=args.dry_run)
+    elif args.cmd == "check-translation":
+        for f in args.files:
+            translate.check(cfg, f, concurrency=args.concurrency, backend=args.backend)
+    elif args.cmd == "similarity":
+        for f in args.files:
+            translate.similarity(cfg, f)
+    elif args.cmd == "build-translated":
+        translate.build(cfg, args.dataset, args.file)
+    elif args.cmd == "compare-sheet":
+        translate.compare_sheet(args.files, args.out)
+    elif args.cmd == "compare-report":
+        translate.compare_report(args.xlsx, args.out)
     elif args.cmd == "push":
         hub.push(cfg, args.out, repo=args.repo)
 

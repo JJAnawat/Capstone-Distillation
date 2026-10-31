@@ -10,10 +10,14 @@ dependencies = [
     "lingua-language-detector>=2.0",
     "tokenizers>=0.20",   # the student's tokenizer, for its context budget
     "huggingface_hub>=0.25",   # `distill push` backups (already installed by datasets)
+    "pythainlp>=5.0",   # Thai word counts (verify.words): Thai puts spaces only between phrases
+    "openpyxl>=3.1",    # the translator-comparison grading sheet
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# `distill similarity`: cross-lingual embeddings of the English and Thai prompt (pulls in torch; on the VM, vLLM's).
+qe = ["sentence-transformers>=3"]
 # GPU VM only (vLLM installs on Linux). Pin the version that passes the first VM run: it must serve Qwen3.5 and Gemma 4.
 vm = ["vllm; sys_platform == 'linux'"]
 

@@ -71,6 +71,24 @@ judge:
   max_retries: 6
   use_reference: true                    # show the gold or a high-rated dataset answer as a (possibly imperfect) reference
 
+# Typhoon Translate 1.5 (4B, Thai <-> English, Qwen3 architecture): only a candidate in the translator comparison.
+# License: the HF tag says apache-2.0, the card says Gemma License, plus OpenTyphoon terms (docs/LICENSES.md).
+typhoon:
+  vllm:
+    model: typhoon-ai/typhoon-translate1.5-4b
+    api_base: http://localhost:8000/v1
+    concurrency: 64
+    min_gpu_gib: 12                      # weights ~8 GiB + overhead + a small KV cache
+    timeout_s: 1800
+    startup_timeout_s: 1800
+    serve_env: {VLLM_USE_FLASHINFER_SAMPLER: 0}
+    serve_args:
+      - --max-model-len=16000            # the card's server example; it advises inputs under 8,192 tokens
+      - --dtype=bfloat16
+      - --gpu-memory-utilization=0.5
+      - --max-num-seqs=64
+      - --port=8000
+
 # Qwen3.5-9B model card, "general tasks" settings. Every field is sent: a local vLLM server fills unsent fields
 # from the model's generation_config.json.
 sampling:
@@ -108,6 +126,27 @@ student:
   tokenizer: wongwian-org/wongwian-micro-instruct
   max_total_tokens: 2048   # input + rationale + answer must fit the student's context
 
+# Thai sets: questions the English run never used are translated (`distill translate`), checked by the judge
+# (`check-translation`) and by embeddings (`similarity`), and built into prepared files (`build-translated`). Then
+# they are distilled like the English ones. The translator and the thresholds come from the translator comparison,
+# graded by hand (`compare-sheet`, `compare-report`; reports/translate_compare.md).
+translate:
+  target: Thai
+  translator: null         # teacher | judge | typhoon: the comparison's winner
+  prompt_version: v1       # prompts/translate_v1.txt; Typhoon uses translate_typhoon_v1.txt, its card's format
+  check_prompt_version: v1 # prompts/translation_check_v1.txt
+  max_tokens: 8192
+  check_max_tokens: 512
+  max_retries: 6
+  # Low temperature for a faithful translation (Typhoon's card uses 0.2). Every field is sent, as for sampling above.
+  sampling: {temperature: 0.2, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.0}
+  compare_limit: 13        # prompts per Thai set in the comparison: 4 sets, ~50 prompts, 3 translators
+  embed_model: BAAI/bge-m3 # `similarity`: cosine of the English and Thai prompt, on CPU (extra `qe`)
+  min_meaning: null        # the judge's expected meaning score (1-5) a translation needs; set from the comparison
+  min_similarity: null     # the cosine a translation needs; set from the comparison
+  # Rule checks on every translation (translate.rule_flags). The length ratio is Thai / English characters.
+  rules: {min_thai_share: 0.5, min_length_ratio: 0.3, max_length_ratio: 3.0}
+
 verify:
   max_gold_words: 4        # UltraFeedback gold answers this short are checked by rule
   sources: [flan_v2_niv2, flan_v2_p3, flan_v2_flan2021]
@@ -124,6 +163,7 @@ select:
 # Needs a write token on the machine, e.g. `export HF_TOKEN=...` in .vm_env.
 hub:
   repo: capstone-thai-slm/capstone-distill-data   # team org; members get the read role
+  runs: [data/full, data/full_th]                 # run directories the dataset card describes, whichever is pushed
 
 # Order matters: a prompt seen in an earlier dataset is dropped from later ones.
 # hint.min_ratings: the best reference response must meet every threshold to be used in hint mode.
@@ -154,6 +194,14 @@ datasets:
     closed: true                       # every prompt has a known answer: the option letter
     exact_gold: true                   # the letter is exact: a prompt with no correct sample is dropped, not judged
     hint: {min_ratings: {}}
+  # Thai sets, built by `distill build-translated` (`prepare` skips them). Their questions were never used in English:
+  # ids in the source's ratings file are excluded. Limits aim at half of each English set's final rows, plus ~10% for
+  # dropped translations; UltraFeedback closed is left out (noisy golds, English-bound tasks), and its share goes to
+  # LogiQA. `prompt_versions: {open: th1, compress: th1}` here would switch a set to the Thai teacher prompts.
+  no_robots_th: {translate: {from: no_robots, only: open, limit: 1400}}
+  helpsteer2_th: {translate: {from: helpsteer2, only: open, limit: 1400}}
+  ultrafeedback_th: {translate: {from: ultrafeedback, only: open, limit: 1400}}
+  logiqa_th: {translate: {from: logiqa, only: closed, limit: 1650}}
 
 filter:
   repetition: {n: 8, max_ratio: 0.3, min_ngrams: 50}

@@ -4,7 +4,8 @@ This pipeline is stage 1 of the distillation project. The student is `wongwian-o
 Thai model with a **2,048-token context**. The pipeline asks a teacher (Qwen3.5-9B) for **short chain-of-thought +
 answer** pairs, samples **N per prompt**, grades them with a judge (Gemma 4 31B) or with rules, keeps the best, and
 writes them **easy → hard** for a curriculum. Raw long thinking is never a training target: it doesn't fit the
-student, and small models learn poorly from it. Training and translation into Thai are out of scope.
+student, and small models learn poorly from it. A **Thai set** is added next to the English one: new questions are
+translated first, checked, and then distilled the same way (see [Thai sets](#thai-sets)). Training is out of scope.
 Project context and design decisions are in [CLAUDE.md](CLAUDE.md).
 
 ```
@@ -17,11 +18,13 @@ distill/verify.py     rule checks for closed-ended prompts
 distill/judge.py      rubric scores 1-9 for rationale + answer; validation against human preferences
 distill/selection.py  best-of-N / distinct correct samples, curriculum order
 distill/report.py     filter (heuristic rejections) and analyze (Markdown report)
+distill/translate.py  Thai sets: translate new questions, check them (rules, judge, embeddings), build the prepared
+                      file; the translator comparison's grading sheet and report
 distill/cli.py        command line
 config.yaml           every setting: models, servers, sampling, thresholds, datasets
 prompts/              versioned templates: {name}_{version}.txt
 scripts/              pipeline.sh (+ lib.sh), run_pilot.sh / run_full.sh / bench.sh / vm_check.sh / collect.sh (GPU VM),
-                      smoke_openrouter.sh (laptop)
+                      translate_compare.sh / run_thai.sh / prompt_ab.sh (Thai sets, GPU VM), smoke_openrouter.sh (laptop)
 ```
 
 ## Pipeline
@@ -117,9 +120,12 @@ export HF_TOKEN=hf_...   # only for Hub backups: a fine-grained token with write
 one is refused). Unchanged files are skipped, and a failed upload only prints a warning. Run it by hand with
 `distill push data/full`. To restore on another machine, `hf download <repo> --repo-type dataset --local-dir .` puts
 the files back at their paths, and every stage resumes from them. Each push also rewrites the repo's dataset card
-(`README.md`, from `docs/dataset_card.md`). It names one subset per file stage (`final`, `judge`, `samples`,
-`rejected`, `ratings`) with one split per set, plus a status table and an example per set. Closed sets get their own
-subsets (`final_closed`, ...), because their extra `gold` column cannot share a schema with open rows. The token is a secret: put it in `.vm_env` (never
+(`README.md`, from `docs/dataset_card.md`). It covers every run directory in `hub.runs` (`data/full`, `data/full_th`),
+whichever one is pushed. It names one subset per file stage (`final`, `judge`, `samples`, `rejected`, `ratings`) with
+one split per set, plus a status table and an example per set. Closed and Thai sets get their own subsets
+(`final_closed`, `final_th`, `final_th_closed`, ...), because their extra columns (`gold`; `input_en`, `translation`)
+cannot share a schema with the others. The Thai prepared files (`data/prepared/*_th.jsonl`) are backed up too, since
+rebuilding them takes a GPU. The token is a secret: put it in `.vm_env` (never
 committed), not in `config.yaml`.
 
 **Using the data.** The training rows are the `final` subsets. Each row's `input` is the prompt, and its target is
@@ -129,6 +135,8 @@ from datasets import load_dataset   # after `hf auth login` with an account in t
 repo = "capstone-thai-slm/capstone-distill-data"
 chat = load_dataset(repo, "final", split="no_robots")           # also helpsteer2, ultrafeedback
 logiqa = load_dataset(repo, "final_closed", split="logiqa")     # also ultrafeedback (its closed set)
+thai = load_dataset(repo, "final_th", split="no_robots")        # Thai sets, once run: also helpsteer2, ultrafeedback
+thai_logiqa = load_dataset(repo, "final_th_closed", split="logiqa")
 local = load_dataset("json", data_files="data/vm/full_night3/logiqa_closed_B.final.jsonl", split="train")
 ```
 The models themselves are not in the repo. They are unchanged Hugging Face downloads in `$HF_HOME` on the VM
@@ -182,8 +190,8 @@ uv run distill analyze data/x/*.kept.jsonl --out reports/x.md
 #   other generate flags: --only closed|open  --model  --concurrency  --seed  --max-tokens  --prompt-version
 #                         --max-cost (OpenRouter)  --include-reference  --backend openrouter
 ```
-Datasets: `no_robots`, `helpsteer2`, `ultrafeedback`. To add one, add an entry in `config.yaml` and a loader in
-`data.LOADERS`.
+Datasets: `no_robots`, `helpsteer2`, `ultrafeedback`, `logiqa`, and the Thai sets `<name>_th`. To add one, add an
+entry in `config.yaml` and a loader in `data.LOADERS`.
 
 **Resume:** every stage appends to its output and skips keys already there: `(id, sample_idx)`, or `id` for ratings.
 Requests that fail after all retries go to `<out>.errors.jsonl` and are retried on the next run.
@@ -254,13 +262,13 @@ Requests that fail after all retries go to `<out>.errors.jsonl` and are retried 
 | `missing_answer` | the answer is empty |
 | `malformed_think_tag` | an unclosed `<think>`, or a stray `<think>`/`</think>` in the answer |
 | `finish_not_stop` | `finish_reason != "stop"` |
-| `language_mismatch` | lingua detects different languages for the prompt and the answer. Code blocks are stripped first. The check is skipped for short texts and for prompts that match `language_skip_patterns` (e.g. translation requests) |
+| `language_mismatch` | lingua detects a different language in the answer or the rationale than in the prompt (a Thai question with English steps, say). Code blocks are stripped first. The check is skipped for short texts and for prompts that match `language_skip_patterns` (e.g. translation requests) |
 | `repetition` | `1 − unique/total` 8-gram ratio > 0.3 in the answer or rationale, or in the raw reasoning of rows without a rationale (character n-grams for scripts without spaces). A compressed sample's raw trace is not trained on, so it is not checked |
 | `hint_leakage` | hint mode only: the reasoning, rationale or answer contains a phrase from `leakage_phrases` |
 | `reasoning_too_long` | `reasoning_tokens > --max-reasoning-tokens` |
 | `missing_rationale` | a cot or compressed sample has no rationale |
-| `rationale_too_long` | the rationale has more than `cot.max_words` (150) words |
-| `over_student_budget` | input + rationale + answer, in the student's tokenizer plus 32 template tokens, exceed `student.max_total_tokens` (2,048; `--max-student-tokens 0` disables). English is a proxy: re-check after translation |
+| `rationale_too_long` | the rationale has more than `cot.max_words` (600) words. Thai text is split into words by PyThaiNLP (`verify.words`), since Thai puts spaces only between phrases |
+| `over_student_budget` | input + rationale + answer, in the student's tokenizer plus 32 template tokens, exceed `student.max_total_tokens` (2,048; `--max-student-tokens 0` disables). For English rows this is a proxy; the Thai sets are measured in Thai |
 
 The filter writes three files: `<out>` (kept rows), `<out stem>.rejected.jsonl` (each rejected row with all its
 reasons) and `<out stem>.rejections.json` (counts).
@@ -300,6 +308,79 @@ reasons) and `<out stem>.rejections.json` (counts).
   - The raw `reasoning` field is dropped. `<out stem>.select_stats.json` counts kept and dropped prompts and rows per
     complexity level.
 
+## Thai sets
+About 6k Thai rows are added next to the English ones (about 1:2). The English rows are not translated. Instead,
+**new questions are translated first and then distilled**, so Qwen writes the Thai rationale and answer itself.
+- **Sets:** a Thai set is a dataset named `<source>_th`, with a `translate:` block in `config.yaml` (`from`, `only`,
+  `limit`). `distill build-translated` writes its prepared file, `data/prepared/<source>_th.jsonl`, in the usual
+  schema, so every later stage reads it like any other dataset. `prepare` skips these sets.
+  - The sets are `no_robots_th`, `helpsteer2_th` and `ultrafeedback_th` (open), and `logiqa_th` (closed).
+  - UltraFeedback's closed set is left out: its golds are noisy, its tasks are often about English, and short golds
+    don't translate reliably. Its share goes to LogiQA.
+- **New questions only:** the English run rated every question before generating, so the source's ratings file
+  (`data/prepared/<source>.complexity.jsonl`) lists every id it used. `translate` leaves those out, then takes a
+  seeded stratified sample. A missing ratings file is an error, not a silent reuse of questions.
+- **What is translated:** the prompt, and the dataset's reference answer when the judge would use it (`hint_ok`). The
+  reference only feeds the judge and is never trained on. LogiQA keeps its option letters, and its gold option text is
+  read back from the translated `A.`–`D.` lines.
+- **Checks, before any generation:**
+  - `rule_flags`: `not_stop`, `not_thai` (Thai share below `translate.rules.min_thai_share`), `refusal`,
+    `length_ratio`, `numbers_changed`, `code_changed`, `urls_changed`, `options_missing`, `english_task_pattern`
+    (`filter.language_skip_patterns`), `repetition`.
+  - `check-translation`: the judge (Gemma, temperature 0, JSON schema) answers `english_only` (the task depends on
+    English itself: grammar, rhyme, wordplay, letter counts, translating into another language), `fluency` and
+    `meaning` (1–5). `meaning` comes last, so its logprobs give `meaning_expected`.
+  - `similarity`: the cosine of the English and Thai prompt in BGE-M3 (CPU, extra `qe`).
+  - `build-translated` drops a translation with any rule flag, `english_only`, no check, or a score below
+    `translate.min_meaning` / `min_similarity` (thresholds set from the comparison; null = not applied).
+- **Later stages:** `rate` rates the English original (`input_en`), so the levels match the English rows. Thai
+  rationales are counted in PyThaiNLP words, and the filter also checks the rationale's language. `verify` accepts
+  `คำตอบสุดท้าย:` as well as `Final answer:`.
+- **Teacher prompts:** the English ones by default. Thai versions (`open_th1`, `open_closed_th1`, `compress_th1`)
+  are used when a set has `prompt_versions: {open: th1, compress: th1}`; the prompt test decides.
+
+**Translator comparison** (once, before the Thai run): the first `translate.compare_limit` (13) prompts of each set,
+translated by Qwen (teacher), Gemma (judge) and Typhoon Translate 1.5 (role `typhoon`; comparison only). That makes
+150 translations.
+```bash
+tmux new -s compare 'bash scripts/translate_compare.sh 2>&1 | tee -ai logs/compare.log'   # ~30 min of GPU
+# Grade reports/translate_compare.xlsx by hand: meaning and fluency 1-5 (sheet "how to grade"). Model names are
+# hidden; reports/translate_compare_key.json maps the rows back. Then, on CPU:
+distill compare-report reports/translate_compare.xlsx      # -> reports/translate_compare.md
+```
+The report shows each translator's grades and how well each automatic signal agrees with them: Spearman, AUC,
+threshold tables, rule flags, the judge's self-preference. Set `translate.translator`, `min_meaning` and
+`min_similarity` from it.
+
+**Thai run:**
+```bash
+distill translate --dataset logiqa_th --dry-run            # pool left after excluding the English ids; no server
+tmux new -s thai 'PROMPT_AB=1 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'   # prep + prompt test, then stops
+# compare reports/prompt_ab_en.md with prompt_ab_th.md; if Thai wins, set prompt_versions on the *_th sets
+tmux new -s thai 'bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'               # distill into data/full_th
+```
+`run_thai.sh` preps each set without a prepared file: translate, check, similarity, build, and a backup of
+`data/translate`. It then runs either `prompt_ab.sh` (13 prompts per set, English vs Thai teacher prompts, judged, a
+report per arm) or `pipeline.sh` on the Thai sets (`LIMIT=0 BY_SET=1 VARIANTS=B OUT=data/full_th`). Everything
+resumes.
+
+Single steps:
+```bash
+distill translate --dataset no_robots_th --translator teacher [--limit 13 --no-reference --out FILE]
+distill check-translation data/translate/no_robots_th.jsonl      # judge server; -> .check.jsonl
+distill similarity data/translate/no_robots_th.jsonl             # CPU; -> .similarity.jsonl
+distill build-translated --dataset no_robots_th                  # -> data/prepared/no_robots_th.jsonl
+distill compare-sheet FILE... --out reports/translate_compare.xlsx
+distill compress FILE --prompt-version th1 --out FILE            # one template version for every row
+```
+
+**Translation record** (`data/translate/<set>.jsonl`): `id` (the English prompt's id), `dataset`, `source_dataset`,
+`input_en`, `input` (Thai), `finish_reason`, `reference_en`, `reference` (Thai, or null), `strata`, `closed`, `gold`
+(English), `hint_ok`, `translator` (`model`, `role`, `prompt_version`, `prompt_hash`, `sampling`), `tokens`,
+`rule_flags`. **Check:** `id`, `english_only`, `fluency`, `meaning`, `meaning_expected`, `critique`, `judge_model`,
+`check_prompt_hash`. **Similarity:** `id`, `similarity`, `embed_model`. The Thai prepared row adds `lang`,
+`input_en` and `translation` to the usual fields, and final rows carry them on.
+
 ## Output schemas (one JSON object per line)
 **Generated sample** (`generate`, then `compress` adds `rationale`, `cot_method`, `compress_model`, `compress_prompt_hash`):
 
@@ -338,6 +419,7 @@ reasons) and `<out stem>.rejections.json` (counts).
 | `student_tokens` | `input`, `rationale`, `answer` and `total` in the **student's** tokenizer; total adds 32 chat-template tokens and must stay ≤ 2,048 |
 | `selection` | `method` (rule+judge or judge), the judge's `score` / `expected_score`, `n_candidates`, `n_passing` |
 | `teacher` | how Qwen made it: `model`, `mode`, `thinking`, `cot_method`, prompt versions/hashes, `sampling`, `seed`, `timestamp`. `max_tokens` is the **teacher's** generation cap, not the student's. `thinking_tokens` is the raw thinking (variant B), which is not in this file. `reply_tokens` is the visible reply in Qwen's tokens (for A it includes the rationale) |
+| `lang`, `input_en`, `translation` | Thai rows only: `th`, the English original of `input`, and the translation's `model`, judge `meaning` (expected, 1–5), `fluency` and embedding `similarity` |
 
 Raw thinking and per-call bookkeeping (`finish_reason`, `cost`, …) stay in the generation and kept files.
 
