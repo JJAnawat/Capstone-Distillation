@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from distill import compress, data, generate, hub, judge, rate, report, selection, server, translate
 
 BACKENDS = ["vllm", "openrouter"]
-ROLES = ["teacher", "judge", "typhoon"]  # typhoon: a translator in the comparison only
+ROLES = ["teacher", "judge", "typhoon", "checker"]  # typhoon: comparison only; checker: another-family checker
 ONLY_HELP = "only prompts with (closed) or without (open) a known short answer"
 
 
@@ -118,8 +118,9 @@ def run(argv=None):
     t.add_argument("--dry-run", action="store_true", help="print the pool and sample sizes; call no server")
     t.add_argument("--concurrency", type=int)
     t.add_argument("--backend", choices=BACKENDS)
-    ct = sub.add_parser("check-translation", help="judge: English-bound task?, fluency and meaning (1-5)")
+    ct = sub.add_parser("check-translation", help="checker: English-bound task?, fluency and meaning (1-5)")
     ct.add_argument("files", nargs="+")
+    ct.add_argument("--role", choices=ROLES, help="the checking model (default: config translate.checker)")
     ct.add_argument("--concurrency", type=int)
     ct.add_argument("--backend", choices=BACKENDS)
     sub.add_parser("similarity", help="embedding cosine of English and Thai prompts (CPU)").add_argument(
@@ -184,7 +185,7 @@ def run(argv=None):
                       dry_run=args.dry_run)
     elif args.cmd == "check-translation":
         for f in args.files:
-            translate.check(cfg, f, concurrency=args.concurrency, backend=args.backend)
+            translate.check(cfg, f, role=args.role, concurrency=args.concurrency, backend=args.backend)
     elif args.cmd == "similarity":
         for f in args.files:
             translate.similarity(cfg, f)

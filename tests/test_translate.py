@@ -129,6 +129,38 @@ def test_check_parses_meaning_last_and_resumes(tmp_path):
     assert bodies == []
 
 
+def test_a_second_checker_writes_its_own_file_with_its_own_model(tmp_path):
+    src = tmp_path / "t.jsonl"
+    report.write_jsonl(src, [{"id": "a", "input_en": "Hi?", "input": "สวัสดี?"}])
+    content = '{"english_only": false, "critique": "Fine.", "fluency": 5, "meaning": 5}'
+    bodies = []
+    translate.check(CFG, src, role="checker", client=mock_client(lambda p, b: completion(content), bodies))
+    assert bodies[0]["model"] == CFG["checker"]["vllm"]["model"] and bodies[0]["logprobs"] is True
+    (out,) = report.read_jsonl(tmp_path / "t.check_checker.jsonl")
+    assert out["judge_model"] == CFG["checker"]["vllm"]["model"] and not (tmp_path / "t.check.jsonl").exists()
+
+
+def test_build_reads_the_configured_checker_and_sorts_by_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "PREPARED_DIR", tmp_path / "prepared")
+    cfg = copy.deepcopy(CFG)
+    cfg["translate"]["checker"] = "checker"
+    path = tmp_path / "no_robots_th.jsonl"
+    base = {"source_dataset": "no_robots", "input_en": "Hi?", "input": "สวัสดี?", "rule_flags": [], "gold": [],
+            "translator": {"model": "gemma"}}
+    report.write_jsonl(path, [{**base, "id": i} for i in ("c", "a", "b")])  # in the order translations finished
+    ok = {"english_only": False, "fluency": 5, "meaning": 5, "meaning_expected": 4.9, "judge_model": "qwen3"}
+    report.write_jsonl(translate.check_path(path, "checker"), [{**ok, "id": i} for i in ("a", "b", "c")])
+    report.write_jsonl(translate.check_path(path, "judge"), [{**ok, "id": "a", "meaning_expected": 1.0}])
+    assert translate.build(cfg, "no_robots_th", path)["kept"] == 3  # the judge's low score is not read
+    rows = report.read_jsonl(tmp_path / "prepared" / "no_robots_th.jsonl")
+    assert [r["id"] for r in rows] == ["a", "b", "c"] and rows[0]["translation"]["checker"] == "qwen3"
+
+
+def test_a_larger_limit_continues_a_smaller_one():
+    rows = [{"id": f"p{i}", "strata": f"s{i % 7}"} for i in range(1000)]
+    assert data.sample(rows, 800, 0)[:400] == data.sample(rows, 400, 0)
+
+
 def test_check_rejects_a_reply_without_scores():
     with pytest.raises(ValueError, match="no valid scores"):
         translate.parse_check(completion('{"english_only": true, "critique": "x", "meaning": 7}'))
@@ -170,7 +202,7 @@ def test_build_drops_failed_translations_and_rebuilds_option_golds(tmp_path, mon
     (row,) = report.read_jsonl(tmp_path / "prepared" / "logiqa_th.jsonl")
     assert row["gold"] == ["B", "B. สอง", "สอง"] and row["source_dataset"] == "logiqa_th" and row["lang"] == "th"
     assert row["closed"] and row["input_en"].startswith("Which?") and not row["hint_ok"]
-    assert row["translation"] == {"model": "qwen", "meaning": 4.9, "fluency": 5, "similarity": 0.9}
+    assert row["translation"] == {"model": "qwen", "checker": None, "meaning": 4.9, "fluency": 5, "similarity": 0.9}
     assert json.loads((tmp_path / "prepared" / "stats.json").read_text(encoding="utf-8"))["logiqa_th"]["kept"] == 1
 
 
@@ -236,11 +268,13 @@ def test_compare_report_scores_translators_and_signals(tmp_path):
     text = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "Graded by hand: 6 of 6 translations for meaning, 6 for fluency" in text
     assert "compared on the 2 prompts" in text and "Unreadable" not in text
-    assert "| teacher | model-teacher | 2 | 5.00 | 5.00 | 0% | 0% | 50% | -0.10 |" in text
-    assert "| typhoon | model-typhoon | 2 | 2.00 | 2.00 | 100% | 100% | 50% | -0.10 |" in text
+    assert "| teacher | model-teacher | 2 | 5.00 | 5.00 | 0% | 0% |" in text
+    assert "| typhoon | model-typhoon | 2 | 2.00 | 2.00 | 100% | 100% |" in text
+    assert "| teacher | -0.10 | 50% |" in text  # the judge's lean on each translator, and its English-only share
     assert "| judge meaning (expected) | meaning | 6 | 1.00 | 1.00 |" in text
-    assert "| embedding similarity | 0.75 | 100% | 100% |" in text  # the bad ones (0.7) out, the good (0.9, 1.0) in
+    assert "| embedding similarity | 0.8 | 100% | 100% |" in text  # the bad ones (0.7) out, the good (0.9, 1.0) in
     assert "| judge meaning (expected) | 4.0 | 100% | 50% |" in text  # the judge's own 3.9 falls below
+    assert "0 grades changed" in text
     assert "| not_thai | 2 | 2.00 |" in text and "odd / phrase" in text and "English prompt 1" in text
 
 
@@ -267,6 +301,38 @@ def test_compare_report_uses_only_graded_cells_and_complete_prompts(tmp_path):
     assert "Unreadable grades, left out: row 5 meaning '4.5'." in text
     assert "| teacher | model-teacher | 1 | 5.00 | 5.00 | 0% |" in text  # the half-graded prompt is not compared
     assert "| judge fluency | fluency | 4 |" in text and "| judge meaning (expected) | meaning | 4 |" in text
+
+
+def test_compare_report_puts_a_second_checker_beside_the_judge(tmp_path):
+    from openpyxl import load_workbook
+    paths = comparison_files(tmp_path)
+    for path in paths:  # the second checker: lenient on the teacher (its own family), strict on the rest
+        role = path.name.split(".")[1]
+        report.write_jsonl(translate.check_path(path, "checker"), [
+            {"id": f"q{i}", "english_only": False, "fluency": 5, "meaning": 5 if role == "teacher" else 2,
+             "meaning_expected": 5.0 if role == "teacher" else 2.0, "judge_model": "model-checker"} for i in range(2)])
+    typhoon = report.read_jsonl(paths[2])
+    typhoon[0]["input"] = typhoon[0]["input_en"]  # an untranslated copy
+    report.write_jsonl(paths[2], typhoon)
+    out = tmp_path / "compare.xlsx"
+    key = translate.compare_sheet(paths, out)
+    wb = load_workbook(out)
+    for row in wb["grades"].iter_rows(min_row=2):
+        row[4].value = row[5].value = 5 if key[row[0].value]["translator"] != "typhoon" else 4  # copy graded 4
+    wb.save(out)
+    translate.compare_report(out, tmp_path / "report.md")
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "`judge` (judge), `checker` (model-checker)" in text and "1 grades changed" in text
+    assert "| typhoon | model-typhoon | 2 | 2.50 |" in text  # the copy counts as 1: (1 + 4) / 2
+    assert "| judge: meaning − user | judge: English-only | checker: meaning − user | checker: English-only |" in text
+    assert "| teacher | -0.10 | 50% | +0.00 | 0% |" in text
+    assert "| checker meaning (expected) | meaning | 6 |" in text and "| checker meaning (expected) | 4.0 |" in text
+
+
+def test_reply_json_falls_back_to_reasoning_content():
+    choice = {"message": {"content": "", "reasoning_content": '{"english_only": false, "critique": "ok", '
+                                                            '"fluency": 5, "meaning": 4}'}}
+    assert translate.parse_check({"choices": [choice]})[2] == 4
 
 
 def test_grade_reads_excel_cells():

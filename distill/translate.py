@@ -164,18 +164,25 @@ def parse_check(j):
             judge.expected_score(choice.get("logprobs"), meaning, SCALE), str(c.get("critique", "")))
 
 
-def check(cfg, path, concurrency=None, backend=None, client=None):
-    """The judge reads the English and Thai prompt: is the task bound to English, and how fluent and faithful (1-5) is
-    the translation? `meaning` comes last in the JSON, so its token is the last digit and its logprobs give
-    `meaning_expected`, a continuous score for the threshold. Writes <stem>.check.jsonl."""
+def check_path(path, role):
+    """Where `role`'s checks of a translation file go: <stem>.check.jsonl for the judge, <stem>.check_<role>.jsonl for
+    another checker, so several checkers can score the same translations."""
+    return f"{stem(path)}.check.jsonl" if role == "judge" else f"{stem(path)}.check_{role}.jsonl"
+
+
+def check(cfg, path, role=None, concurrency=None, backend=None, client=None):
+    """A checker model (`role`, default translate.checker) reads the English and Thai prompt: is the task bound to
+    English, and how fluent and faithful (1-5) is the translation? `meaning` comes last in the JSON, so its token is
+    the last digit and its logprobs give `meaning_expected`, a continuous score for the threshold."""
     tc = cfg["translate"]
+    role = role or tc.get("checker") or "judge"
     jc = {**judge.judge_config(cfg), "max_tokens": cfg["translate"]["check_max_tokens"]}
-    ep = server.endpoint(cfg, "judge", backend)
+    ep = server.endpoint(cfg, role, backend)
     system, user, prompt_hash = load_template("translation_check", tc["check_prompt_version"])
-    out = f"{stem(path)}.check.jsonl"
+    out = check_path(path, role)
     done = {rid for rid, _ in read_done_keys(out)}
     todo = [r for r in report.iter_jsonl(path) if r["id"] not in done and (r.get("input") or "").strip()]
-    print(f"[check] {path}: {len(done)} already checked, {len(todo)} to run")
+    print(f"[check] {path} by the {role} ({ep['model']}): {len(done)} already checked, {len(todo)} to run")
     if not todo:
         return {}
     concurrency = concurrency or ep["concurrency"]
@@ -193,7 +200,7 @@ def check(cfg, path, concurrency=None, backend=None, client=None):
         return rec, (j.get("usage") or {}).get("completion_tokens", 0)
 
     return server.run_pool("check", work, todo, out, concurrency, lambda r: {"id": r["id"]}, input=str(path),
-                           backend=ep["backend"], model=ep["model"])
+                           role=role, backend=ep["backend"], model=ep["model"])
 
 
 def cosine(a, b):
@@ -256,11 +263,14 @@ def drop_reason(rec, chk, sim, tc):
 
 
 def build(cfg, dataset, path=None):
-    """Write data/prepared/<dataset>.jsonl from the translations that pass every check, in the prepared-row schema plus
-    `input_en`, `lang` and `translation`, so every later stage reads it like any other dataset."""
+    """Write data/prepared/<dataset>.jsonl from the translations that pass every check (translate.checker's), in the
+    prepared-row schema plus `input_en`, `lang` and `translation`, so every later stage reads it like any other
+    dataset. Rows are sorted by id: the seeded sample of each run, and so the continuation of a larger LIMIT, then
+    does not depend on the order in which the translations finished."""
     tc = cfg["translate"]
     path = path or TRANSLATE_DIR / f"{dataset}.jsonl"
-    checks, sims = by_id(f"{stem(path)}.check.jsonl"), by_id(f"{stem(path)}.similarity.jsonl")
+    checks = by_id(check_path(path, tc.get("checker") or "judge"))
+    sims = by_id(f"{stem(path)}.similarity.jsonl")
     stats, rows = Counter(), []
     for rec in report.iter_jsonl(path):
         chk, sim = checks.get(rec["id"]), sims.get(rec["id"])
@@ -272,11 +282,12 @@ def build(cfg, dataset, path=None):
                      "reference": rec.get("reference"), "ratings": {}, "gold": thai_gold(rec),
                      "source_dataset": dataset, "hint_ok": rec.get("hint_ok", False) and bool(rec.get("reference")),
                      "closed": rec.get("closed", False), "lang": "th", "input_en": rec["input_en"],
-                     "translation": {"model": rec["translator"]["model"], "meaning": chk["meaning_expected"],
-                                     "fluency": chk["fluency"], "similarity": sim and sim["similarity"]}})
+                     "translation": {"model": rec["translator"]["model"], "checker": chk.get("judge_model"),
+                                     "meaning": chk["meaning_expected"], "fluency": chk["fluency"],
+                                     "similarity": sim and sim["similarity"]}})
     stats["kept"] = len(rows)
     data.PREPARED_DIR.mkdir(parents=True, exist_ok=True)
-    report.write_jsonl(data.PREPARED_DIR / f"{dataset}.jsonl", rows)
+    report.write_jsonl(data.PREPARED_DIR / f"{dataset}.jsonl", sorted(rows, key=lambda r: r["id"]))
     stats_path = data.PREPARED_DIR / "stats.json"
     all_stats = json.loads(stats_path.read_text(encoding="utf-8")) if stats_path.exists() else {}
     all_stats[dataset] = dict(stats)
@@ -419,23 +430,41 @@ def fmt(x, spec=".2f"):
     return "—" if x is None else format(x, spec)
 
 
+def checks_of(path):
+    """{role: {id: check}} for every checker that scored a translation file (see `check_path`)."""
+    name = Path(stem(path)).name
+    found = {"judge": by_id(check_path(path, "judge"))}
+    for p in sorted(Path(path).parent.glob(f"{name}.check_*.jsonl")):
+        if not p.name.endswith((".runs.jsonl", ".errors.jsonl")):
+            found[p.name.removeprefix(f"{name}.check_").removesuffix(".jsonl")] = by_id(p)
+    return {role: checks for role, checks in found.items() if checks}
+
+
 def compare_report(xlsx, out="reports/translate_compare.md"):
-    """Read the user's grades and write the comparison report: each translator's grades, how well each automatic
-    signal (the judge's meaning and fluency, embedding similarity, rule flags) agrees with them, and the thresholds.
-    Only graded cells count. Translators are compared on the prompts whose translations are all graded for meaning,
-    so a sheet graded part of the way stays fair; the signals use every graded translation."""
+    """Read the user's grades and write the comparison report: each translator's grades, how well each checker's
+    meaning and fluency scores (and embedding similarity, and the rule flags) agree with them, each checker's lean per
+    translator (does it favour its own family?), and the thresholds.
+    - Only graded cells count. Translators are compared on the prompts whose translations are all graded for meaning,
+      so a sheet graded part of the way stays fair; the signals use every graded translation.
+    - A translation with no Thai letters at all is an untranslated copy and counts as meaning 1, as the grading
+      guide's scale says, whatever it was graded."""
     key = {int(k): v for k, v in json.loads(Path(f"{str(xlsx).removesuffix('.xlsx')}_key.json")
                                           .read_text(encoding="utf-8")).items()}
     grades, bad = read_grades(xlsx)
-    files = {}
-    for p in {v["path"] for v in key.values()}:
-        files[p] = (by_id(p), by_id(f"{stem(p)}.check.jsonl"), by_id(f"{stem(p)}.similarity.jsonl"))
-    rows = []
+    files = {p: (by_id(p), checks_of(p), by_id(f"{stem(p)}.similarity.jsonl")) for p in {v["path"] for v in key.values()}}
+    roles = sorted({role for _, checks, _ in files.values() for role in checks}, key=lambda r: (r != "judge", r))
+    models = {role: next(c.get("judge_model") or role for _, checks, _ in files.values() if role in checks
+                         for c in checks[role].values()) for role in roles}
+    rows, recounted = [], 0
     for n, k in key.items():
-        rec, chk, sim = (f.get(k["id"]) for f in files[k["path"]])
+        recs, checks, sims = files[k["path"]]
+        rec = recs.get(k["id"])
         meaning, fluency, note = grades.get(n, (None, None, ""))
+        if meaning not in (None, 1) and rec and verify.thai_share(rec["input"]) == 0:
+            meaning, recounted = 1, recounted + 1
         rows.append({"row": n, **k, "meaning": meaning, "fluency": fluency, "note": note, "rec": rec,
-                     "chk": chk, "sim": (sim or {}).get("similarity"), "flags": (rec or {}).get("rule_flags", [])})
+                     "chk": {role: checks.get(role, {}).get(k["id"]) for role in roles},
+                     "sim": (sims.get(k["id"]) or {}).get("similarity"), "flags": (rec or {}).get("rule_flags", [])})
     graded = [r for r in rows if r["meaning"] is not None]
     fluent = [r for r in rows if r["fluency"] is not None]
     groups = defaultdict(list)
@@ -443,58 +472,74 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
         groups[(r["dataset"], r["id"])].append(r)
     complete = {g for g, rs in groups.items() if all(r["meaning"] is not None for r in rs)}
     fair = [r for r in rows if (r["dataset"], r["id"]) in complete]
+    translators = sorted({r["translator"] for r in rows})
     mean = lambda xs: sum(xs) / len(xs) if xs else None
+    meaning_of = lambda role: lambda r: (r["chk"][role] or {}).get("meaning_expected")
+    fluency_of = lambda role: lambda r: (r["chk"][role] or {}).get("fluency")
     lines = ["# Translator comparison", "",
              f"Graded by hand: {len(graded)} of {len(rows)} translations for meaning, {len(fluent)} for fluency "
              f"(1-5). Translators are compared on the {len(complete)} prompts whose translations are all graded for "
-             "meaning; rule flags and English-only cover all their translations. The signals use every graded "
-             "translation. Bad = meaning ≤ 3.", ""]
+             "meaning; rule flags cover all their translations. The signals use every graded translation. "
+             "Bad = meaning ≤ 3.", "",
+             f"Untranslated copies (no Thai letters) count as meaning 1, as the grading guide's scale says: "
+             f"{recounted} grades changed.", "",
+             "Checkers: " + ", ".join(f"`{role}` ({models[role]})" for role in roles) + ".", ""]
     if len(complete) < 15:
         lines += [f"Only {len(complete)} complete prompts: read the differences between translators as rough.", ""]
     if bad:
         lines += ["Unreadable grades, left out: " + ", ".join(f"row {n} {c} {v!r}" for n, c, v in bad) + ".", ""]
-    lines += ["## Translators", "",
-              "| translator | model | prompts | meaning | fluency | meaning ≤ 2 | rule-flagged | judge: English-only "
-              "| judge meaning − user |", "|---|---|---:|---:|---:|---:|---:|---:|---:|"]
-    for t in sorted({r["translator"] for r in rows}):
+    lines += ["## Translators", "", "| translator | model | prompts | meaning | fluency | meaning ≤ 2 | rule-flagged |",
+              "|---|---|---:|---:|---:|---:|---:|"]
+    for t in translators:
         f, a = [r for r in fair if r["translator"] == t], [r for r in rows if r["translator"] == t]
-        diff = mean([r["chk"]["meaning_expected"] - r["meaning"] for r in graded if r["translator"] == t and r["chk"]])
         lines.append(f"| {t} | {a[0]['model']} | {len(f)} | {fmt(mean([r['meaning'] for r in f]))} | "
                      f"{fmt(mean([r['fluency'] for r in f if r['fluency'] is not None]))} | "
                      f"{report.share(f, lambda r: r['meaning'] <= 2) if f else '—'} | "
-                     f"{report.share(a, lambda r: bool(r['flags']))} | "
-                     f"{report.share(a, lambda r: bool((r['chk'] or {}).get('english_only')))} | {fmt(diff, '+.2f')} |")
+                     f"{report.share(a, lambda r: bool(r['flags']))} |")
+    lines += ["", "## Each checker's lean, by translator", "",
+              "Mean of the checker's meaning score minus the user's grade (+ = more lenient than the user), and the "
+              "share of translations it calls bound to English. A checker that favours its own family leans further "
+              "up on that family's translations.", "",
+              "| translator | " + " | ".join(f"{role}: meaning − user | {role}: English-only" for role in roles) + " |",
+              "|---|" + "---:|---:|" * len(roles)]
+    for t in translators:
+        g, a = [r for r in graded if r["translator"] == t], [r for r in rows if r["translator"] == t]
+        cells = [f"{fmt(mean([meaning_of(role)(r) - r['meaning'] for r in g if meaning_of(role)(r) is not None]), '+.2f')}"
+                 f" | {report.share(a, lambda r: bool((r['chk'][role] or {}).get('english_only')))}" for role in roles]
+        lines.append(f"| {t} | " + " | ".join(cells) + " |")
     lines += ["", "## Automatic signals vs the grades", "",
               "Spearman: rank correlation with the user's grade. AUC: how often a good translation (grade ≥ 4) "
               "scores above a bad one (≤ 3).", "", "| signal | vs | rows | Spearman | AUC good > bad |",
               "|---|---|---:|---:|---:|"]
-    signals = [("judge meaning (expected)", "meaning", lambda r: r["chk"] and r["chk"]["meaning_expected"]),
-               ("judge fluency", "fluency", lambda r: r["chk"] and r["chk"]["fluency"]),
-               ("embedding similarity", "meaning", lambda r: r["sim"])]
-    for name, vs, f in signals:
+    signals = [s for role in roles for s in ((f"{role} meaning (expected)", "meaning", meaning_of(role)),
+                                              (f"{role} fluency", "fluency", fluency_of(role)))]
+    for name, vs, f in signals + [("embedding similarity", "meaning", lambda r: r["sim"])]:
         pts = [(f(r), r[vs]) for r in (graded if vs == "meaning" else fluent) if f(r) is not None]
-        good, bad = [s for s, g in pts if g >= 4], [s for s, g in pts if g <= 3]
+        good, low = [s for s, g in pts if g >= 4], [s for s, g in pts if g <= 3]
         rho = spearman([s for s, _ in pts], [g for _, g in pts]) if len(pts) > 2 else None
         lines.append(f"| {name} | {vs} | {len(pts)} | {fmt(rho)} | "
-                     f"{fmt(report.auc(good, bad) if good and bad else None)} |")
+                     f"{fmt(report.auc(good, low) if good and low else None)} |")
     lines += ["", "## Thresholds", "", "Share of bad translations rejected and of good ones kept at each threshold.",
               "", "| signal | threshold | bad rejected | good kept |", "|---|---:|---:|---:|"]
-    for name, f, grid in (("judge meaning (expected)", lambda r: r["chk"] and r["chk"]["meaning_expected"],
-                           (3.0, 3.5, 4.0, 4.5, 4.8)),
-                          ("embedding similarity", lambda r: r["sim"], (0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9))):
+    grids = [(f"{role} meaning (expected)", meaning_of(role), (3.0, 3.5, 4.0, 4.5, 4.8)) for role in roles]
+    for name, f, grid in grids + [("embedding similarity", lambda r: r["sim"], (0.6, 0.7, 0.8, 0.9))]:
         pts = [(f(r), r["meaning"]) for r in graded if f(r) is not None]
-        good, bad = [s for s, m in pts if m >= 4], [s for s, m in pts if m <= 3]
+        good, low = [s for s, m in pts if m >= 4], [s for s, m in pts if m <= 3]
         for t in grid:
-            lines.append(f"| {name} | {t} | {fmt(mean([s < t for s in bad]), '.0%')} | "
+            lines.append(f"| {name} | {t} | {fmt(mean([s < t for s in low]), '.0%')} | "
                          f"{fmt(mean([s >= t for s in good]), '.0%')} |")
     flags = Counter(f for r in rows for f in r["flags"])
     lines += ["", "## Rule flags", "", "| flag | translations | mean user meaning of the flagged |", "|---|---:|---:|"]
     lines += [f"| {f} | {n} | {fmt(mean([r['meaning'] for r in graded if f in r['flags']]))} |"
               for f, n in flags.most_common()] or ["| none | 0 | — |"]
-    english = sorted({(r["dataset"], r["id"], r["rec"]["input_en"][:150].replace("\n", " ").replace("|", "/"))
-                      for r in rows if (r["chk"] or {}).get("english_only") and r["rec"]})
-    lines += ["", "## Flagged by the judge as bound to English", "", "| set | id | prompt |", "|---|---|---|"]
-    lines += [f"| {d} | {i} | {t} |" for d, i, t in english] or ["| — | — | none |"]
+    english = defaultdict(set)
+    for r in rows:
+        for role in roles:
+            if (r["chk"][role] or {}).get("english_only") and r["rec"]:
+                english[(r["dataset"], r["id"], r["rec"]["input_en"][:150].replace("\n", " ").replace("|", "/"))].add(role)
+    lines += ["", "## Called bound to English by a checker", "", "| set | id | by | prompt |", "|---|---|---|---|"]
+    lines += [f"| {d} | {i} | {', '.join(sorted(by))} | {t} |" for (d, i, t), by in sorted(english.items())] or [
+        "| — | — | — | none |"]
     notes = [r for r in rows if r["note"]]
     if notes:
         lines += ["", "## Grader notes", "", "| row | translator | meaning | note |", "|---:|---|---:|---|"]
@@ -504,3 +549,5 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
     Path(out).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"[compare] report -> {out}")
     return rows
+
+

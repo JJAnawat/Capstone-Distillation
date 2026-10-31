@@ -24,7 +24,7 @@ distill/cli.py        command line
 config.yaml           every setting: models, servers, sampling, thresholds, datasets
 prompts/              versioned templates: {name}_{version}.txt
 scripts/              pipeline.sh (+ lib.sh), run_pilot.sh / run_full.sh / bench.sh / vm_check.sh / collect.sh (GPU VM),
-                      translate_compare.sh / run_thai.sh (Thai sets, GPU VM), smoke_openrouter.sh (laptop)
+                      translate_compare.sh / second_checker.sh / run_thai.sh (Thai sets, GPU VM), smoke_openrouter.sh (laptop)
 ```
 
 ## Pipeline
@@ -327,13 +327,15 @@ About 6k Thai rows are added next to the English ones (about 1:2). The English r
   - `rule_flags`: `not_stop`, `not_thai` (Thai share below `translate.rules.min_thai_share`), `refusal`,
     `length_ratio`, `numbers_changed`, `code_changed`, `urls_changed`, `options_missing`, `english_task_pattern`
     (`filter.language_skip_patterns`), `repetition`.
-  - `check-translation`: the judge (Gemma, temperature 0, JSON schema) answers `english_only` (the task depends on
-    English itself: grammar, rhyme, wordplay, letter counts, translating into another language), `fluency` and
-    `meaning` (1–5). `meaning` comes last, so its logprobs give `meaning_expected`.
-  - `similarity`: the cosine of the English and Thai prompt in BGE-M3 (extra `qe`). It runs on the GPU when one is
-    free (the scripts run it with no server up), else on CPU.
-  - `build-translated` drops a translation with any rule flag, `english_only`, no check, or a score below
-    `translate.min_meaning` / `min_similarity` (thresholds set from the comparison; null = not applied).
+  - `check-translation`: a checker model (`translate.checker`: `judge` = Gemma, or `checker` = Qwen3-32B-AWQ, from
+    outside the Gemma family) answers `english_only` (the task depends on English itself: grammar, rhyme, wordplay,
+    letter counts, translating into another language), `fluency` and `meaning` (1–5), at temperature 0 with a JSON
+    schema. `meaning` comes last, so its logprobs give `meaning_expected`. The judge writes `<stem>.check.jsonl`,
+    another checker `<stem>.check_<role>.jsonl`.
+  - `build-translated` drops a translation with any rule flag, `english_only`, no check, or a meaning score below
+    `translate.min_meaning` (4.0). It writes the prompts sorted by id.
+  - `similarity` (BGE-M3 cosine, extra `qe`) is no longer part of the run: in the comparison it did not tell good
+    translations from bad ones. The command stays for manual use.
 - **Later stages:** `rate` rates the English original (`input_en`), so the levels match the English rows. Thai
   rationales are counted in PyThaiNLP words, and the filter also checks the rationale's language. `verify` accepts
   `คำตอบสุดท้าย:` as well as `Final answer:`.
@@ -342,7 +344,8 @@ About 6k Thai rows are added next to the English ones (about 1:2). The English r
 
 **Translator comparison** (once, before the Thai run): the first `translate.compare_limit` (13) prompts of each set,
 translated by Qwen (teacher), Gemma (judge) and Typhoon Translate 1.5 (role `typhoon`; comparison only). That makes
-52 prompts and 156 translations.
+52 prompts and 156 translations. It ran on 2026-10-31; [reports/translate_compare.md](reports/translate_compare.md)
+has the results. Gemma won, and its meaning check worked (AUC 0.79); similarity did not.
 ```bash
 tmux new -s compare 'bash scripts/translate_compare.sh 2>&1 | tee -ai logs/compare.log'   # ~30 min of GPU
 # Grade reports/translate_compare.xlsx by hand: meaning and fluency 1-5 (sheet "how to grade"). Model names are
@@ -353,23 +356,38 @@ The report shows each translator's grades and how well each automatic signal agr
 threshold tables, rule flags, the judge's self-preference. A partly graded sheet works: only filled cells count, and
 unreadable ones (not a whole number from 1 to 5) are listed and skipped. Translators are compared only on prompts
 whose three translations all have a meaning grade, so grade a prompt's rows together; the signals use every graded
-row. Set `translate.translator`, `min_meaning` and
-`min_similarity` from it.
+row. A translation with no Thai letters is an untranslated copy and counts as meaning 1, as the guide's scale says.
+Set `translate.translator`, `checker` and `min_meaning` from it.
+
+**A checker from another family** (~10 min of GPU, before the Thai run): `scripts/second_checker.sh` has the
+`checker` role score the same 156 translations. The report then puts each checker beside the hand grades, with its
+lean on each translator, which shows whether it favours its own family. If it agrees with the grades at least as
+well as Gemma, `translate.checker: checker` makes it check Gemma's translations in the Thai run.
 
 **Thai run:**
 ```bash
 distill translate --dataset logiqa_th --dry-run            # pool left after excluding the English ids; no server
-tmux new -s thai 'bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'   # prep, then distill into data/full_th
+tmux new -s thai 'LIMIT=500 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'    # night 1: prep + 500 per set
+tmux new -s thai 'LIMIT=1200 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'   # night 2: 700 more per set
+tmux new -s thai 'LIMIT=0 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'      # night 3: the rest
 ```
-`run_thai.sh` preps each set without a prepared file: translate, check, similarity, build, and a backup of
-`data/translate`. Then it runs `pipeline.sh` on the Thai sets (`LIMIT=0 BY_SET=1 VARIANTS=B OUT=data/full_th`).
-Everything resumes, so the same command continues in the next GPU window.
+- **Prep** runs once, for each set without a prepared file: translate (translate.translator), check
+  (translate.checker), build, and a backup of `data/translate`. The prompt pool then stays fixed.
+- **Distillation** runs `pipeline.sh` on `LIMIT` prompts per Thai set (variant B, `OUT=data/full_th`).
+  - The sampler is nested, so a later run with a larger `LIMIT` only adds prompts, and `LIMIT=0` takes the rest.
+  - Each run ends with final rows for every prompt done so far, on the Hub.
+  - With a `LIMIT`, each model loads once per run (`BY_SET=0`). An unlimited run goes set by set (`BY_SET=1`), so a
+    cut still leaves finished sets.
+- **Timing:** a run takes about 25 min plus 23 s of GPU time for each prompt added per set (English-run rates, plus
+  15% for Thai). Prep takes about 1.5 h more on the first night.
+- **Resume:** everything resumes, so a run cut by the stopper continues on the next run with the same or a higher
+  `LIMIT`.
 
 Single steps:
 ```bash
 distill translate --dataset no_robots_th --translator teacher [--limit 13 --no-reference --out FILE]
-distill check-translation data/translate/no_robots_th.jsonl      # judge server; -> .check.jsonl
-distill similarity data/translate/no_robots_th.jsonl             # no server up; -> .similarity.jsonl
+distill check-translation data/translate/no_robots_th.jsonl      # translate.checker's server; or --role checker
+distill similarity data/translate/no_robots_th.jsonl             # manual only; no server up; -> .similarity.jsonl
 distill build-translated --dataset no_robots_th                  # -> data/prepared/no_robots_th.jsonl
 distill compare-sheet FILE... --out reports/translate_compare.xlsx
 ```

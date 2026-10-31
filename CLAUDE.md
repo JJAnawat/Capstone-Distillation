@@ -132,12 +132,28 @@ Thai sets first run translate → check-translation → similarity → build-tra
   - **The reference answer is translated only for the judge and the golds.**
   - **Prompts bound to English are flagged and dropped:** the judge's `english_only`, plus the
     `language_skip_patterns` rule.
-  - **Translator comparison:** about 50 prompts (13 per set) by Qwen, Gemma and Typhoon Translate 1.5. **The user
-    grades all 150 translations by hand** (meaning 1–5, fluency 1–5) in an .xlsx, blind.
-    - The user cut it from 100 prompts; it is the only translation pilot.
-    - The grades pick the translator and calibrate the automatic check (the judge's meaning score, BGE-M3 cosine)
-      and its thresholds.
-    - Gemma both translates and checks, so the report shows its self-preference.
+  - **Translator comparison (G1, 2026-10-31):** 52 prompts (13 per set) by Qwen, Gemma and Typhoon Translate 1.5,
+    which makes 156 translations. The user graded 117 by hand, blind (meaning and fluency, 1–5), in an .xlsx. Results
+    are in `reports/translate_compare.md`.
+    - **Gemma won:** meaning 4.77 and fluency 4.69, against Qwen 4.36 / 4.15 and Typhoon 3.51 / 3.54. Typhoon left
+      13 of its 52 translations as untranslated English copies. So `translate.translator: judge`.
+    - **Checks:**
+      - The judge's meaning score works: AUC 0.79 and Spearman 0.53 against the grades.
+      - Its fluency score agrees too (AUC 0.82).
+      - BGE-M3 similarity doesn't (AUC 0.36): untranslated copies score 1.0, and flipped meanings look normal. It
+        was dropped from the run.
+      - So `min_meaning: 4.0` and `rules.min_thai_share: 0.2`. At 0.2 the copies (0.0) are still caught, and prompts
+        heavy with code or names (0.35–0.48, graded 5) are kept. Gemma's translations then lose about 6%.
+    - **Grading caveats:**
+      - 7 untranslated copies were graded meaning 5 with fluency 1, so the report counts copies as 1, as the guide's
+        scale says.
+      - Gemma caught two LogiQA option flips (rows 120 and 134) that were graded 5. Claude checked both, and Gemma
+        was right.
+    - **Same family (the user's concern):** Gemma translating and checking. Its lean is +0.23 on its own
+      translations and +0.19 on Qwen's, so there's little self-preference. But it flagged none of its own as
+      English-only. The user chose to test a checker from another family: Qwen3-32B-AWQ, the `checker` role, run by
+      `scripts/second_checker.sh` (~10 min) at the start of G2. It becomes `translate.checker` if it agrees with the
+      grades at least as well. Gemma still translates and judges the distilled answers.
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
@@ -149,8 +165,11 @@ Thai sets first run translate → check-translation → similarity → build-tra
 ## Commands
 - Laptop: `uv venv --python 3.12 && uv pip install -e ".[dev]"`, then `uv run pytest`.
 - Laptop smoke test (Git Bash; needs `OPENROUTER_API_KEY` in `.env`; costs cents): `bash scripts/smoke_openrouter.sh`.
-- Thai sets on the VM: `scripts/translate_compare.sh` (comparison), then `bash scripts/run_thai.sh` (prep, then
-  distill). README "Thai sets".
+- Thai sets on the VM (README "Thai sets"):
+  - `scripts/translate_compare.sh` (the translator comparison) and `scripts/second_checker.sh` (the other-family
+    checker);
+  - then `LIMIT=N bash scripts/run_thai.sh`: prep once, then distill N prompts per set. A larger N on the next
+    night continues, and N=0 takes the rest.
 - VM: the README's "VM sessions" section. Session 1: `vm_check.sh`, install, download, a `LIMIT=5` smoke run.
   Session 2: `run_pilot.sh`. Session 3: `bench.sh` and judge validation with thinking on. Each session ends with
   `scripts/collect.sh <name> <out_dir>`, then a commit and push of `reports/`.
@@ -248,8 +267,10 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   select, verify and hub. The teacher keeps its English prompts.
   - **The VM is ready:**
     - it has installed the `qe` extra (sentence-transformers 6.2.0; vLLM, torch and transformers unchanged);
-    - Typhoon Translate 1.5 and BGE-M3 are in `~/hf`, and BGE-M3 works there;
-    - the venv no longer points at the old clone (Gotchas), and the tests pass there.
+    - the venv no longer points at the old clone (Gotchas), and the tests pass there;
+    - `~/hf` holds Qwen3.5-9B, Gemma 4 31B, Qwen3-32B-AWQ (the other-family checker) and the student tokenizer.
+      Typhoon Translate and BGE-M3 were deleted after the comparison (2026-11-01, 11.8 GiB). The old clone on the
+      root disk stays: the user's choice.
   - **Dry pool check** (the same on both machines), unused prompts left vs the limit: No Robots 6,205 / 1,400,
     HelpSteer2 4,692 / 1,400, UltraFeedback open 48,572 / 1,400, LogiQA 9,178 / 1,650.
   - The laptop has the VM's ratings files in `data/prepared/`. Its OpenRouter key has expired, and no smoke tests
@@ -271,20 +292,22 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   not a model. The teacher, judge and student are unchanged downloads in `~/hf` on the VM. The user asked where
   "the model" was, so say this plainly.
 - **Next: the Thai GPU phase**, in the user's windows:
-  1. G1, the translator comparison, **ran on 2026-10-31 from 16:50 to 17:07 UTC (17 min)**.
-     - 156 translations of 52 prompts. Nothing failed and nothing came back empty. Every translation was checked and
-       scored, and the results are backed up on the Hub (`data/translate_compare/`).
-     - **Waiting for the user's grades.** The laptop has the sheet in `data/vm/translate_compare/` (gitignored, with
-       its key) and the run files in `data/translate_compare/`.
-     - Then `distill compare-report data/vm/translate_compare/translate_compare.xlsx` picks the translator and the
-       thresholds, which go into `config.yaml`. If Typhoon wins, settle its license first.
-  2. G2: `bash scripts/run_thai.sh`, about 10–12 GPU hours over two long windows. Look at the first finished set's
-     rows before the rest run.
-     - Prep takes about 1–1.5 h: translate about 5,850 questions plus the judge's references, check them, embed,
-       build.
-     - Distillation takes about 9–10.5 h. That is about 7.6 h of stage time at the English run's measured rates
-       (open sets 3.8–4.9 s per prompt, LogiQA 7.7 s), plus about 20 min per set for two server starts, rating,
-       filter and backup, plus some 10–20% for Thai costing more Qwen tokens.
+  1. **G1, the translator comparison, is done:** it ran on 2026-10-31 from 16:50 to 17:07 UTC (17 min), and the
+     user graded it. Results are under Key decisions.
+     - The graded sheet is on the laptop in `data/vm/translate_compare/` (gitignored) and on the VM at
+       `reports/translate_compare.xlsx`.
+  2. **G2, night 1 (about 6 h):**
+     - `bash scripts/second_checker.sh` (~10 min). Then decide `translate.checker` and `min_meaning` together with the
+       user from `reports/translate_compare.md`, and commit.
+     - Then `LIMIT=500 bash scripts/run_thai.sh` (~5.2 h): prep (~1.5 h; Gemma translates, the checker checks), then
+       500 prompts per set.
+  3. **G2, night 2:** `LIMIT=1200` (~5.0 h). **Night 3:** `LIMIT=0`, the rest (~1.8 h). That's about 6.5k Thai rows
+     in total.
+     - The estimates use the English run's rates (open sets 3.8–4.9 s per prompt, LogiQA 7.7 s, so about 23 s per
+       prompt per set across the four sets) with 15% added for Thai, plus about 25 min per run for model loads and
+       backups.
+     - Night 1 measures the real speed: re-estimate nights 2–3 from it.
+     - Look at night 1's final rows before night 2.
 - **Also open with the user** (no GPU): LogiQA's verbose answers (Night 3 above): `answer` often repeats the
   rationale. And how a row maps onto the student's chat template, which belongs to the training stage.
 - **Models moved off /dev/shm (2026-10-27):** `.vm_env` now sets `HF_HOME=$HOME/hf` and

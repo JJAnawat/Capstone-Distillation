@@ -71,8 +71,9 @@ judge:
   max_retries: 6
   use_reference: true                    # show the gold or a high-rated dataset answer as a (possibly imperfect) reference
 
-# Typhoon Translate 1.5 (4B, Thai <-> English, Qwen3 architecture): only a candidate in the translator comparison.
-# License: the HF tag says apache-2.0, the card says Gemma License, plus OpenTyphoon terms (docs/LICENSES.md).
+# Typhoon Translate 1.5 (4B, Thai <-> English, Qwen3 architecture): only a candidate in the translator comparison,
+# which it lost; its weights were removed from the VM afterwards. License: the HF tag says apache-2.0, the card says
+# Gemma License, plus OpenTyphoon terms (docs/LICENSES.md).
 typhoon:
   vllm:
     model: typhoon-ai/typhoon-translate1.5-4b
@@ -87,6 +88,24 @@ typhoon:
       - --dtype=bfloat16
       - --gpu-memory-utilization=0.5
       - --max-num-seqs=64
+      - --port=8000
+
+# A translation checker from outside the Gemma family, so Gemma's translations need not be checked by Gemma
+# (translate.checker; scripts/second_checker.sh tests it against the hand grades first). Apache-2.0, 4-bit AWQ.
+checker:
+  vllm:
+    model: Qwen/Qwen3-32B-AWQ
+    api_base: http://localhost:8000/v1
+    concurrency: 128
+    min_gpu_gib: 24                      # weights 18 GiB + ~2 GiB overhead + a small KV cache; checks are short
+    timeout_s: 1800
+    startup_timeout_s: 1800
+    logprobs: true                       # expected meaning score from the score token's distribution
+    serve_env: {VLLM_USE_FLASHINFER_SAMPLER: 0}
+    serve_args:                          # no reasoning parser: with thinking off the JSON stays in `content`
+      - --max-model-len=16384
+      - --gpu-memory-utilization=0.92
+      - --max-num-seqs=128
       - --port=8000
 
 # Qwen3.5-9B model card, "general tasks" settings. Every field is sent: a local vLLM server fills unsent fields
@@ -130,9 +149,13 @@ student:
 # (`check-translation`) and by embeddings (`similarity`), and built into prepared files (`build-translated`). Then
 # they are distilled like the English ones. The translator and the thresholds come from the translator comparison,
 # graded by hand (`compare-sheet`, `compare-report`; reports/translate_compare.md).
+# The comparison (2026-10-31, graded by hand): Gemma translated best (meaning 4.77 / fluency 4.69 vs Qwen 4.36 / 4.15,
+# Typhoon 3.51 / 3.54); the judge's meaning check separated good from bad (AUC 0.79), embedding similarity did not
+# (0.53).
 translate:
   target: Thai
-  translator: null         # teacher | judge | typhoon: the comparison's winner
+  translator: judge        # teacher | judge | typhoon: Gemma won the comparison
+  checker: judge           # the role that checks translations: judge, or checker (another family; second_checker.sh)
   prompt_version: v1       # prompts/translate_v1.txt; Typhoon uses translate_typhoon_v1.txt, its card's format
   check_prompt_version: v1 # prompts/translation_check_v1.txt
   max_tokens: 8192
@@ -141,11 +164,12 @@ translate:
   # Low temperature for a faithful translation (Typhoon's card uses 0.2). Every field is sent, as for sampling above.
   sampling: {temperature: 0.2, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 0.0, repetition_penalty: 1.0}
   compare_limit: 13        # prompts per Thai set in the comparison: 4 sets, ~50 prompts, 3 translators
-  embed_model: BAAI/bge-m3 # `similarity`: cosine of the English and Thai prompt, GPU if free, else CPU (extra `qe`)
-  min_meaning: null        # the judge's expected meaning score (1-5) a translation needs; set from the comparison
-  min_similarity: null     # the cosine a translation needs; set from the comparison
-  # Rule checks on every translation (translate.rule_flags). The length ratio is Thai / English characters.
-  rules: {min_thai_share: 0.5, min_length_ratio: 0.3, max_length_ratio: 3.0}
+  embed_model: BAAI/bge-m3 # `similarity` (manual only): cosine of the English and Thai prompt (extra `qe`)
+  min_meaning: 4.0         # the checker's expected meaning score (1-5) a translation needs
+  min_similarity: null     # not applied: similarity did not tell good translations from bad ones
+  # Rule checks on every translation (translate.rule_flags). The length ratio is Thai / English characters. A Thai
+  # share of 0.2 still catches untranslated copies (0.0) but keeps prompts heavy with code or names (0.35-0.48).
+  rules: {min_thai_share: 0.2, min_length_ratio: 0.3, max_length_ratio: 3.0}
 
 verify:
   max_gold_words: 4        # UltraFeedback gold answers this short are checked by rule

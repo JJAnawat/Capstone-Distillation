@@ -98,10 +98,13 @@ def strip_thought(text):
 
 
 def reply_json(choice):
-    """The JSON object in a judge reply ({} if none), after Gemma's empty thought block is stripped."""
-    content = strip_thought(choice["message"].get("content"))
-    m = re.search(r"\{.*\}", content, re.S)
-    return json.loads(m.group(0)) if m else {}
+    """The JSON object in a judge reply ({} if none), after Gemma's empty thought block is stripped. A reasoning parser
+    may file a thinking-off reply as reasoning, so that is searched when the content holds no JSON."""
+    msg = choice["message"]
+    for text in (msg.get("content"), msg.get("reasoning_content") or msg.get("reasoning")):
+        if m := re.search(r"\{.*\}", strip_thought(text), re.S):
+            return json.loads(m.group(0))
+    return {}
 
 
 def parse_grade(j):
