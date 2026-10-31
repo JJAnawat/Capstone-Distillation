@@ -204,7 +204,7 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
 
 ## Status (2026-10-28)
 - **Built and in use on the VM:** the full pipeline, with resume, clean Ctrl-C, per-set mode, the shared-GPU fit,
-  and the Hub backup with its dataset card. 89 offline tests.
+  and the Hub backup with its dataset card. 104 offline tests.
 - **Pilot (2026-10-22: 100 prompts per set, N=8; reports/pilot2.md, reports/judge_validation.md):**
   - **Judge:** HelpSteer2 agreement was 71.0% for v1 and 70.2% for v2. v2 stays for its wider score spread.
   - **Judge vs rules on closed questions:** AUC about 0.5, mostly from noisy FLAN golds. A small human audit is
