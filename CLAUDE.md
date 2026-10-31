@@ -152,8 +152,15 @@ Thai sets first run translate → check-translation → similarity → build-tra
     - **Same family (the user's concern):** Gemma translating and checking. Its lean is +0.23 on its own
       translations and +0.19 on Qwen's, so there's little self-preference. But it flagged none of its own as
       English-only. The user chose to test a checker from another family: Qwen3-32B-AWQ, the `checker` role, run by
-      `scripts/second_checker.sh` (~10 min) at the start of G2. It becomes `translate.checker` if it agrees with the
-      grades at least as well. Gemma still translates and judges the distilled answers.
+      `scripts/second_checker.sh`.
+    - **The second checker lost** (2026-10-31, 18:49–18:56 UTC, 7 min). Its meaning score reaches AUC 0.69 and
+      Spearman 0.35, against Gemma's 0.79 / 0.53. At 4.0 it rejects 12% of bad translations, against Gemma's 56%.
+      - It scored 11 of the 13 untranslated English copies 4–5 ("accurate"). It gave both LogiQA option flips 5,
+        where Gemma gave 2–3.
+      - It leans +0.54 on Qwen's translations and +1.15 on Typhoon's.
+      - **On Gemma's translations it leans +0.20, where Gemma leans +0.23:** an independent checker rates them as
+        Gemma does, so there's no sign that Gemma favours its own work.
+      - So `translate.checker` stays `judge`, with `min_meaning: 4.0`.
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
@@ -297,10 +304,9 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
      - The graded sheet is on the laptop in `data/vm/translate_compare/` (gitignored) and on the VM at
        `reports/translate_compare.xlsx`.
   2. **G2, night 1 (about 6 h):**
-     - `bash scripts/second_checker.sh` (~10 min). Then decide `translate.checker` and `min_meaning` together with the
-       user from `reports/translate_compare.md`, and commit.
-     - Then `LIMIT=500 bash scripts/run_thai.sh` (~5.2 h): prep (~1.5 h; Gemma translates, the checker checks), then
-       500 prompts per set.
+     - `bash scripts/second_checker.sh` is done: Gemma stays the checker (Key decisions).
+     - Next, on the user's go: `LIMIT=500 bash scripts/run_thai.sh` (~5.2 h). That's prep (~1.5 h, one Gemma session
+       that translates and checks), then 500 prompts per set.
   3. **G2, night 2:** `LIMIT=1200` (~5.0 h). **Night 3:** `LIMIT=0`, the rest (~1.8 h). That's about 6.5k Thai rows
      in total.
      - The estimates use the English run's rates (open sets 3.8–4.9 s per prompt, LogiQA 7.7 s, so about 23 s per

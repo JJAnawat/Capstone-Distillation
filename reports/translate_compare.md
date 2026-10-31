@@ -4,7 +4,7 @@ Graded by hand: 117 of 156 translations for meaning, 117 for fluency (1-5). Tran
 
 Untranslated copies (no Thai letters) count as meaning 1, as the grading guide's scale says: 7 grades changed.
 
-Checkers: `judge` (google/gemma-4-31B-it-qat-w4a16-ct).
+Checkers: `judge` (google/gemma-4-31B-it-qat-w4a16-ct), `checker` (Qwen/Qwen3-32B-AWQ).
 
 ## Translators
 
@@ -18,11 +18,11 @@ Checkers: `judge` (google/gemma-4-31B-it-qat-w4a16-ct).
 
 Mean of the checker's meaning score minus the user's grade (+ = more lenient than the user), and the share of translations it calls bound to English. A checker that favours its own family leans further up on that family's translations.
 
-| translator | judge: meaning − user | judge: English-only |
-|---|---:|---:|
-| judge | +0.23 | 0% |
-| teacher | +0.19 | 4% |
-| typhoon | +0.27 | 8% |
+| translator | judge: meaning − user | judge: English-only | checker: meaning − user | checker: English-only |
+|---|---:|---:|---:|---:|
+| judge | +0.23 | 0% | +0.20 | 0% |
+| teacher | +0.19 | 4% | +0.54 | 0% |
+| typhoon | +0.27 | 8% | +1.15 | 4% |
 
 ## Automatic signals vs the grades
 
@@ -32,6 +32,8 @@ Spearman: rank correlation with the user's grade. AUC: how often a good translat
 |---|---|---:|---:|---:|
 | judge meaning (expected) | meaning | 117 | 0.53 | 0.79 |
 | judge fluency | fluency | 117 | 0.62 | 0.82 |
+| checker meaning (expected) | meaning | 117 | 0.35 | 0.69 |
+| checker fluency | fluency | 117 | 0.41 | 0.72 |
 | embedding similarity | meaning | 117 | -0.18 | 0.36 |
 
 ## Thresholds
@@ -45,6 +47,11 @@ Share of bad translations rejected and of good ones kept at each threshold.
 | judge meaning (expected) | 4.0 | 56% | 93% |
 | judge meaning (expected) | 4.5 | 60% | 92% |
 | judge meaning (expected) | 4.8 | 60% | 92% |
+| checker meaning (expected) | 3.0 | 8% | 100% |
+| checker meaning (expected) | 3.5 | 12% | 100% |
+| checker meaning (expected) | 4.0 | 12% | 100% |
+| checker meaning (expected) | 4.5 | 28% | 95% |
+| checker meaning (expected) | 4.8 | 28% | 91% |
 | embedding similarity | 0.6 | 0% | 100% |
 | embedding similarity | 0.7 | 16% | 96% |
 | embedding similarity | 0.8 | 24% | 76% |
@@ -66,7 +73,8 @@ Share of bad translations rejected and of good ones kept at each threshold.
 |---|---|---|---|
 | helpsteer2_th | e6e38b74fc477030 | judge | From the provided list of "to-get supplies", sort out the supplies that start with the letter "A" and "B". Output should be not more than 30 words.  R |
 | no_robots_th | 03d14063670eabd2 | judge | Hi I'm working on a Python programming prompt and I am running into a bug. Here is the code prompt I'm trying to solve:  You are given a string of wor |
-| ultrafeedback_th | 0d1630c75c12272a | judge | Detailed Instructions: Given a sentence in Japanese, provide an equivalent paraphrased translation in Korean that retains the same meaning both throug |
+| no_robots_th | a58ba8cec3bb345f | checker | Turn this short story passage into a series of Instagram captions  Little things are growing big in my mind. The window before my desk makes a little  |
+| ultrafeedback_th | 0d1630c75c12272a | checker, judge | Detailed Instructions: Given a sentence in Japanese, provide an equivalent paraphrased translation in Korean that retains the same meaning both throug |
 | ultrafeedback_th | c158c1330be40491 | judge | Given the question: What is the final step of the following process: -  An egg is laid by a mother bird - A baby bird forms within the egg if it is fe |
 
 ## Grader notes
