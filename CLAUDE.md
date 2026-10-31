@@ -83,7 +83,8 @@ prepare → rate → generate → compress (variant B only) → filter → judge
     and closed sets get their own subsets (`gold` broke a shared schema: `CastError`). All 9 subsets were
     load-tested on 2026-10-23.
   - The Hub's table viewer doesn't work here: it needs PRO or an Enterprise org for private datasets. Readers use
-    the card and `load_dataset(repo, "final", split="no_robots")`.
+    the card and `load_dataset(repo, "final", split="no_robots")`. Closed sets load from `final_closed`
+    (`split="logiqa"` or `"ultrafeedback"`), which was tested on 2026-10-28. README's "Using the data" has both.
   - It stays private until a deliberate release: the final rows with a dataset card, once the company-hardware and
     Qwen terms questions in docs/LICENSES.md are settled.
 - **Final rows** carry `student_tokens`, measured in the student tokenizer, and a `teacher` group. `reasoning_tokens`
@@ -217,7 +218,15 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
     byte on 2026-10-28.
   - The laptop has every set's final rows, select stats and `reports/full.md` in `data/vm/full_night3/`, and night
     1's full files in `data/vm/full_night1/`. `hf download` gets the rest.
-- **Next, with the user:** review `reports/full.md` and some samples, LogiQA's verbose answers first (Night 3 above).
+- **Nothing runs on the VM now:** no tmux sessions, and none of our processes on the GPU. Stage 1's output is data,
+  not a model. The teacher, judge and student are unchanged downloads in `~/hf` on the VM. The user asked where
+  "the model" was, so say this plainly.
+- **Next, with the user** (no GPU needed):
+  1. Review `reports/full.md` and some samples, LogiQA's verbose answers first (Night 3 above). For multiple-choice
+     questions, `answer` often repeats the rationale. Should it shrink to the conclusion and the letter?
+  2. Decide how a row maps onto the student's chat template, and whether to translate into Thai first. Both belong
+     to the training and translation stages.
+  3. The open items below.
 - **Models moved off /dev/shm (2026-10-27):** `.vm_env` now sets `HF_HOME=$HOME/hf` and
   `VLLM_CACHE_ROOT=$HOME/vllm-cache` (the old file is `.vm_env.bak-shm`), and both models are in `~/hf` (40 GB;
   the files sit in `hub/blobs`, so per-model `du` looks tiny). The home now holds 53 GB. Loading from the share

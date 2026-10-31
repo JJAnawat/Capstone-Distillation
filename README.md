@@ -89,7 +89,15 @@ tmux new -s full 'BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 VARIANTS=B VALIDATE=0 bas
 # LogiQA (closed only) runs on its own, so LIMIT_CLOSED=500 stays UltraFeedback's. Prepare it once first:
 distill prepare --dataset logiqa
 tmux new -s logiqa 'DATASETS=logiqa BY_SET=1 LIMIT=2500 LIMIT_CLOSED=2500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log'
+
+# Time-boxed GPU window: Ctrl-C 10 min before the end (the run stops its server and resumes next time).
+# S = seconds until then; -X cancel first, because C-c only leaves copy mode when someone is scrolling the pane.
+tmux new -d -s stopper "sleep $S; tmux send-keys -t full -X cancel 2>/dev/null; tmux send-keys -t full C-c"
 ```
+The first full run (all five sets, 12,432 final rows) finished on 2026-10-27. Rerunning the commands above only
+resumes it; a larger `LIMIT` adds prompts. Night 3 used a stricter stopper, `logs/stopper.sh` on the VM (untracked).
+It waits for clock times instead of a sleep count, and 3 min before the end it kills any of our processes still on
+the GPU.
 Monitor with `tail -f logs/pilot.log logs/vllm_teacher.log` (tmux: `Ctrl-b d` detaches, `tmux attach -t pilot`
 returns).
 
@@ -113,6 +121,19 @@ the files back at their paths, and every stage resumes from them. Each push also
 `rejected`, `ratings`) with one split per set, plus a status table and an example per set. Closed sets get their own
 subsets (`final_closed`, ...), because their extra `gold` column cannot share a schema with open rows. The token is a secret: put it in `.vm_env` (never
 committed), not in `config.yaml`.
+
+**Using the data.** The training rows are the `final` subsets. Each row's `input` is the prompt, and its target is
+`rationale` (numbered steps separated by blank lines) followed by `answer`.
+```python
+from datasets import load_dataset   # after `hf auth login` with an account in the org
+repo = "capstone-thai-slm/capstone-distill-data"
+chat = load_dataset(repo, "final", split="no_robots")           # also helpsteer2, ultrafeedback
+logiqa = load_dataset(repo, "final_closed", split="logiqa")     # also ultrafeedback (its closed set)
+local = load_dataset("json", data_files="data/vm/full_night3/logiqa_closed_B.final.jsonl", split="train")
+```
+The models themselves are not in the repo. They are unchanged Hugging Face downloads in `$HF_HOME` on the VM
+(`~/hf`). `distill serve teacher` (or `judge`) runs one by hand behind an OpenAI-style API at `localhost:8000/v1`,
+but only during a GPU window. Normally the pipeline starts and stops them.
 
 `scripts/pipeline.sh` does the work:
 1. Starts the teacher server; rates, generates and compresses; stops it.

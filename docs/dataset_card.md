@@ -25,6 +25,7 @@ Choose a subset in the viewer's drop-down, or name it in `load_dataset`. Each su
 ```python
 from datasets import load_dataset   # after `hf auth login` with an account in the organization
 final = load_dataset("<!-- repo -->", "final", split="no_robots")
+logiqa = load_dataset("<!-- repo -->", "final_closed", split="logiqa")   # closed sets have their own subsets
 ```
 
 ## Final rows: the training data
