@@ -271,9 +271,13 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   not a model. The teacher, judge and student are unchanged downloads in `~/hf` on the VM. The user asked where
   "the model" was, so say this plainly.
 - **Next: the Thai GPU phase**, in the user's windows:
-  1. G1, the translator comparison: `scripts/translate_compare.sh` (~30 min). The user grades
-     `reports/translate_compare.xlsx`, then `distill compare-report` picks the translator and the thresholds, which
-     go into `config.yaml`. If Typhoon wins, settle its license first.
+  1. G1, the translator comparison, **ran on 2026-10-31 from 16:50 to 17:07 UTC (17 min)**.
+     - 156 translations of 52 prompts. Nothing failed and nothing came back empty. Every translation was checked and
+       scored, and the results are backed up on the Hub (`data/translate_compare/`).
+     - **Waiting for the user's grades.** The laptop has the sheet in `data/vm/translate_compare/` (gitignored, with
+       its key) and the run files in `data/translate_compare/`.
+     - Then `distill compare-report data/vm/translate_compare/translate_compare.xlsx` picks the translator and the
+       thresholds, which go into `config.yaml`. If Typhoon wins, settle its license first.
   2. G2: `bash scripts/run_thai.sh`, about 10–12 GPU hours over two long windows. Look at the first finished set's
      rows before the rest run.
      - Prep takes about 1–1.5 h: translate about 5,850 questions plus the judge's references, check them, embed,
