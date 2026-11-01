@@ -183,6 +183,19 @@ def translate_texts(texts, engine, max_chars):
             for plan in plans]
 
 
+def fix_special_tokens(tok, model_config):
+    """A causal tokenizer shipped as a bare tokenizer.json (Seed-X) has no bos, eos or pad token under transformers 5:
+    take bos and eos from the model config, pad with eos on the left, and return whether a prompt needs its bos token
+    added by hand (the tokenizer does not add it)."""
+    for name in ("bos", "eos"):
+        token_id = getattr(model_config, f"{name}_token_id", None)
+        if getattr(tok, f"{name}_token") is None and token_id is not None:
+            setattr(tok, f"{name}_token", tok.convert_ids_to_tokens(token_id))
+    tok.pad_token = tok.pad_token or tok.eos_token
+    tok.padding_side = "left"
+    return bool(tok.bos_token) and tok("a")["input_ids"][:1] != [tok.bos_token_id]
+
+
 def load_engine(h):
     """translate(pieces) -> (texts, truncated) for an `hf:` role, with transformers on the GPU. `seq2seq` models (NLLB,
     MADLAD) get a source language or a target-language prefix; `causal` ones (Seed-X) get each piece in the role's
@@ -193,13 +206,14 @@ def load_engine(h):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     causal = h.get("kind") == "causal"
     tok = tf.AutoTokenizer.from_pretrained(h["model"], **({"src_lang": h["src_lang"]} if "src_lang" in h else {}))
-    if causal:
-        tok.padding_side = "left"
-        tok.pad_token = tok.pad_token or tok.eos_token
+    add_bos = causal and fix_special_tokens(tok, tf.AutoConfig.from_pretrained(h["model"]))
     model_cls = tf.AutoModelForCausalLM if causal else tf.AutoModelForSeq2SeqLM
     model = model_cls.from_pretrained(h["model"], dtype=getattr(torch, h.get("dtype", "bfloat16"))).to(device).eval()
     extra = {"forced_bos_token_id": tok.convert_tokens_to_ids(h["tgt_lang"])} if "tgt_lang" in h else {}
-    wrap = (lambda p: h["prompt"].format(text=p)) if causal else (lambda p: h.get("prefix", "") + p)
+    if causal:
+        extra["pad_token_id"] = tok.pad_token_id
+    wrap = ((lambda p: (tok.bos_token if add_bos else "") + h["prompt"].format(text=p)) if causal
+            else (lambda p: h.get("prefix", "") + p))
 
     def translate(pieces):
         order = sorted(range(len(pieces)), key=lambda i: len(pieces[i]))
@@ -214,8 +228,12 @@ def load_engine(h):
             if causal:
                 gen = gen[:, enc["input_ids"].shape[1]:]
             for i, g in zip(idx, gen):
+                if causal:  # the continuation ends at its first eos (pad is eos too); none means it hit the cap
+                    stop = (g == tok.eos_token_id).nonzero()
+                    g, cut[i] = (g[:stop[0, 0]], False) if stop.numel() else (g, True)
+                else:
+                    cut[i] = int((g != tok.pad_token_id).sum()) >= cap
                 texts[i] = clean_mt(tok.decode(g, skip_special_tokens=True))
-                cut[i] = int((g != tok.pad_token_id).sum()) >= cap
         return texts, cut
     return translate
 

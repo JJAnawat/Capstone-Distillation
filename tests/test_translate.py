@@ -144,6 +144,26 @@ def test_an_hf_role_runs_in_process_on_the_given_ids_only(source, fake_engine, t
         translate.run(CFG, "no_robots_th", "nllb", limit=8, ids=["p0"], out=tmp_path / "v.jsonl")  # used in English
 
 
+class BareTokenizer:
+    """Seed-X's tokenizer under transformers 5: special tokens unset, no bos added to a prompt."""
+    vocab = {"<unk>": 0, "<s>": 1, "</s>": 2}
+    bos_token = eos_token = pad_token = None
+    padding_side = "right"
+    bos_token_id = property(lambda self: self.vocab.get(self.bos_token))
+
+    def convert_ids_to_tokens(self, i):
+        return {v: k for k, v in self.vocab.items()}[i]
+
+    def __call__(self, text):
+        return {"input_ids": [5]}
+
+
+def test_a_bare_causal_tokenizer_gets_its_special_tokens_from_the_model_config():
+    tok = BareTokenizer()
+    assert translate.fix_special_tokens(tok, types.SimpleNamespace(bos_token_id=1, eos_token_id=2)) is True
+    assert (tok.bos_token, tok.eos_token, tok.pad_token, tok.padding_side) == ("<s>", "</s>", "</s>", "left")
+
+
 def test_seed_x_prompt_and_its_language_tag():
     assert CFG["seedx"]["hf"]["prompt"].format(text="Hi") == "Translate the following English sentence into Thai:\nHi <th>"
     assert translate.clean_mt("สวัสดี <th>") == "สวัสดี" and translate.clean_mt(" สวัสดี ") == "สวัสดี"
