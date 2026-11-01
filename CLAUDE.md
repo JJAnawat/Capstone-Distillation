@@ -306,10 +306,21 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
        `reports/translate_compare.xlsx`.
   2. **G2, night 1 (about 6 h):**
      - `bash scripts/second_checker.sh` is done: Gemma stays the checker (Key decisions).
-     - **`LIMIT=500 bash scripts/run_thai.sh` started on 2026-10-31 at 19:04 UTC**, in tmux `thai`, logging to
-       `logs/thai.log`. The window ends 2026-11-01 01:00 UTC (08:00 Thailand). The stopper, `logs/stopper_thai.sh` in
-       tmux `stopper` (untracked, adapted from night 3's), sends Ctrl-C at 00:50 and kills our GPU processes at 00:57.
-       The estimate is ~5.2 h: prep (~1.5 h, one Gemma session that translates and checks), then 500 prompts per set.
+     - **Night 1, `LIMIT=500`: done, 2026-10-31 19:04 to 23:31 UTC (4h27m), with no failures.** The stopper
+       (`logs/stopper_thai.sh`, untracked) found nothing left to stop. Data is in `data/full_th` and on the Hub.
+       - **Prep took 86 min:** translation 65 min (561–695 tok/s on Gemma), checks 17 min. Prepared prompts:
+         No Robots 1,275, HelpSteer2 1,292, UltraFeedback 1,152 and LogiQA 1,523, from 1,400 / 1,400 / 1,400 /
+         1,650. UltraFeedback lost 18%, 96 of them to `english_task_pattern` (translation tasks).
+       - **Distillation took 3h01m:** 20.4 s per prompt per set, so Thai costs no more than English, plus about
+         10 min a run for model loads.
+       - **2,336 final rows:** No Robots 393, HelpSteer2 400, UltraFeedback 410, LogiQA 1,133 (2.27 rows per prompt;
+         72 prompts had no correct letter). Student tokens: median 381, p90 623, max 1,953.
+       - **The language filter rejected 16–24% of open-set samples.**
+         - About 590 because `compress` wrote English steps for a Thai question, from Qwen's English thinking.
+         - About 110 because lingua read a Thai prompt heavy with English names or code as English, so a Thai
+           answer looked mismatched.
+         - 28 / 54 / 49 open prompts lost every sample to this. A fix was proposed before night 2.
+       - LogiQA: 34 of 500 got no complexity rating. Some LogiQA rationales end with a `Final answer:` line.
   3. **G2, night 2:** `LIMIT=1200` (~5.0 h). **Night 3:** `LIMIT=0`, the rest (~1.8 h). That's about 6.5k Thai rows
      in total.
      - The estimates use the English run's rates (open sets 3.8–4.9 s per prompt, LogiQA 7.7 s, so about 23 s per
