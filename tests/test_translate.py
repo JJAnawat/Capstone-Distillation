@@ -9,7 +9,7 @@ import types
 import pytest
 import yaml
 
-from distill import data, generate, hub, rate, report, selection, translate, verify
+from distill import compress, data, generate, hub, rate, report, selection, translate, verify
 from helpers import CFG, completion, gen_row, mock_client
 
 SOURCE = [{"id": f"p{i}", "input": f"Name 3 fruits high in vitamin C, take {'abcdefghijkl'[i]}.", "strata": f"s{i % 2}", "closed": False,
@@ -394,6 +394,68 @@ def test_filter_flags_an_english_rationale_for_a_thai_question():
     assert "language_mismatch" in report.rejection_reasons(row, fcfg)
     thai_steps = "1. แสงอาทิตย์กระเจิงเมื่อกระทบโมเลกุลอากาศ โดยแสงสีน้ำเงินกระเจิงมากที่สุด\n\n2. ตอนเย็นแสงผ่านอากาศมากขึ้น"
     assert report.rejection_reasons({**row, "rationale": thai_steps}, fcfg) == []
+
+
+THAI_ANSWER = "ฟังก์ชันนี้รับรายการสินค้าแล้วรวมราคาทั้งหมด โดยวนลูปผ่านแต่ละรายการและบวกราคาเข้าด้วยกันก่อนคืนค่าผลรวม"
+THAI_STEPS = "1. ฟังก์ชันต้องรับรายการสินค้าและคืนผลรวมของราคา\n\n2. วนลูปผ่านแต่ละรายการแล้วบวกราคาเข้าไปในตัวแปรผลรวม"
+CODE_PROMPT = ("เขียน Python function calculate_total_price(items: list[dict]) -> float that returns the sum of "
+               "item['price'] for every item in the shopping cart list")
+
+
+def test_filter_expects_thai_on_a_thai_row_whose_prompt_reads_as_english():
+    fcfg = CFG["filter"]
+    row = gen_row(0, input=CODE_PROMPT, answer=THAI_ANSWER, rationale=THAI_STEPS, cot_method="compressed")
+    assert report.detect_language(CODE_PROMPT, fcfg["language"]["min_chars"]).name == "ENGLISH"
+    assert "language_mismatch" in report.rejection_reasons(row, fcfg)  # without `lang`: the old, wrong rejection
+    assert report.rejection_reasons({**row, "lang": "th"}, fcfg) == []
+    english = "1. The function sums the price of every item in the list.\n\n2. It loops over the items and adds each price."
+    assert "language_mismatch" in report.rejection_reasons({**row, "lang": "th", "rationale": english}, fcfg)
+
+
+def compress_row(i, rationale=None, **kw):
+    return gen_row(i, input=CODE_PROMPT, answer=THAI_ANSWER, reasoning="Sum the prices.", **kw,
+                   **({"rationale": rationale, "cot_method": "compressed"} if rationale is not None else {}))
+
+
+def test_compress_names_the_target_language_on_translated_rows(tmp_path):
+    src = tmp_path / "raw.jsonl"
+    report.write_jsonl(src, [compress_row(0, lang="th", source_dataset="no_robots_th"), compress_row(1)])
+    bodies = []
+    compress.run(CFG, src, tmp_path / "b.jsonl", client=mock_client(lambda p, b: completion(THAI_STEPS), bodies))
+    users = {b["messages"][1]["content"].count("Write every step in Thai, the language of the question"): b
+             for b in bodies}
+    assert set(users) == {0, 1} and "Write in the same language as the question" in users[0]["messages"][1]["content"]
+    hashes = {r["id"]: r["compress_prompt_hash"] for r in report.read_jsonl(tmp_path / "b.jsonl")}
+    assert hashes["p0"] != hashes["p1"]
+
+
+def test_redo_recompresses_only_thai_rows_with_english_steps(tmp_path):
+    english = "1. The function sums the price of every item in the list.\n\n2. It loops over the items and adds each price."
+    raw = [compress_row(0, lang="th"), compress_row(1, lang="th"), compress_row(2)]
+    src, out = tmp_path / "raw.jsonl", tmp_path / "b.jsonl"
+    report.write_jsonl(src, raw)
+    report.write_jsonl(out, [{**raw[0], "rationale": english, "cot_method": "compressed"},
+                             {**raw[1], "rationale": THAI_STEPS, "cot_method": "compressed"},
+                             {**raw[2], "rationale": english, "cot_method": "compressed"}])  # English row: not redone
+    bodies = []
+    compress.run(CFG, src, out, redo_wrong_language=True,
+                 client=mock_client(lambda p, b: completion(THAI_STEPS), bodies))
+    assert len(bodies) == 1 and CODE_PROMPT in bodies[0]["messages"][1]["content"]
+    recs = report.read_jsonl(out)
+    assert sorted(r["id"] for r in recs) == ["p0", "p1", "p2"]  # no key twice
+    assert {r["id"]: r["rationale"] for r in recs} == {"p0": THAI_STEPS, "p1": THAI_STEPS, "p2": english}
+
+
+def test_rate_asks_again_for_a_rating_without_a_level(tmp_path, monkeypatch):
+    rows = [{"id": f"q{i}", "input": f"Question {i}?", "strata": None, "closed": False} for i in range(2)]
+    monkeypatch.setattr(data, "load_prompts", lambda cfg, name: rows)
+    out = tmp_path / "ratings.jsonl"
+    report.write_jsonl(out, [{"id": "q0", "complexity": None}, {"id": "q1", "complexity": 2}])
+    bodies = []
+    rate.run(CFG, "x", out=out, client=mock_client(lambda p, b: completion("ReasoningRequired: 4"), bodies))
+    assert len(bodies) == 1 and "Question 0?" in bodies[0]["messages"][-1]["content"]
+    latest = {r["id"]: r["complexity"] for r in report.read_jsonl(out)}  # the last line wins, as in load_complexity
+    assert latest == {"q0": 4, "q1": 2} and CFG["rate"]["max_tokens"] == 2048
 
 
 def test_final_rows_carry_the_translation():

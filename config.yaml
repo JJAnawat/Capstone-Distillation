@@ -134,12 +134,15 @@ cot:
 
 compress:
   prompt_version: v3
+  # Translated rows: v3 with "Write every step in {language}" (translate.target). Qwen thinks in English, and v3's
+  # "the same language as the question" let ~590 of Thai night 1's rationales come out in English.
+  translated_prompt_version: v4
   max_tokens: 512
 
 rate:
   prompt_version: v1
   temperature: 0.0
-  max_tokens: 1024
+  max_tokens: 2048       # 1,024 cut ~7% of the analyses (long LogiQA ones) before the level; those are asked again
 
 student:
   tokenizer: wongwian-org/wongwian-micro-instruct

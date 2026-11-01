@@ -6,14 +6,16 @@
 # 2. Distill LIMIT prompts per Thai set into data/full_th (variant B, the English teacher prompts). A later run with
 #    a larger LIMIT only adds prompts (the sampler is nested); LIMIT=0 takes all the rest. Each run ends with final
 #    rows for every prompt done so far, backed up to the Hub.
-#    BY_SET: a run with a LIMIT, sized to a night, loads each model once (BY_SET=0); an unlimited run goes set by set
-#    (BY_SET=1), so a cut still leaves finished sets.
+#    LIMIT_CLOSED caps the closed set (LogiQA) on its own. BY_SET: a run with a limit, sized to a night, loads each
+#    model once (BY_SET=0); an unlimited run goes set by set (BY_SET=1), so a cut still leaves finished sets.
+#    REDO_LANGUAGE=1: compress first redoes translated rows whose rationale came out in the wrong language.
 # Every step resumes, so a run cut by the stopper continues on the next run.
-#   tmux new -s thai 'LIMIT=500 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'
+#   night 1: tmux new -s thai 'LIMIT=500 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'
+#   night 2: tmux new -s thai 'REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'
 set -euo pipefail
 SETS=${SETS:-"no_robots_th helpsteer2_th ultrafeedback_th logiqa_th"}
 LIMIT=${LIMIT:-0}
-if [ "$LIMIT" -gt 0 ]; then BY_SET=${BY_SET:-0}; else BY_SET=${BY_SET:-1}; fi
+if [ "$LIMIT" -gt 0 ] || [ -n "${LIMIT_CLOSED:-}" ]; then BY_SET=${BY_SET:-0}; else BY_SET=${BY_SET:-1}; fi
 
 source scripts/lib.sh
 TRANSLATOR=${TRANSLATOR:-$(config_value "c['translate']['translator'] or ''")}
@@ -38,6 +40,7 @@ prep() {
 }
 
 prep
-echo "== $(date -u +%H:%M) distill: LIMIT=$LIMIT prompts per set (0 = all), BY_SET=$BY_SET"
+echo "== $(date -u +%H:%M) distill: LIMIT=$LIMIT per set (0 = all), LIMIT_CLOSED=${LIMIT_CLOSED:-$LIMIT}," \
+  "BY_SET=$BY_SET, REDO_LANGUAGE=${REDO_LANGUAGE:-0}"
 DATASETS="$SETS" LIMIT="$LIMIT" BY_SET="$BY_SET" VARIANTS=B VALIDATE=0 OUT=${OUT:-data/full_th} \
   REPORT=${REPORT:-reports/full_th.md} exec bash scripts/pipeline.sh

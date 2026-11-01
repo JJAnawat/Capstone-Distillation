@@ -81,6 +81,8 @@ def run(argv=None):
     c.add_argument("file")
     c.add_argument("--out", required=True)
     c.add_argument("--concurrency", type=int)
+    c.add_argument("--redo-wrong-language", action="store_true",
+                   help="first drop translated rows whose rationale is in another language, so they are redone")
     c.add_argument("--backend", choices=BACKENDS)
 
     a = sub.add_parser("analyze", help="write a Markdown report comparing variants, scores and lengths")
@@ -160,7 +162,8 @@ def run(argv=None):
                      max_cost=args.max_cost, include_reference=args.include_reference, model=args.model,
                      prompt_version=args.prompt_version, only=args.only, backend=args.backend)
     elif args.cmd == "compress":
-        compress.run(cfg, args.file, args.out, concurrency=args.concurrency, backend=args.backend)
+        compress.run(cfg, args.file, args.out, concurrency=args.concurrency, backend=args.backend,
+                     redo_wrong_language=args.redo_wrong_language)
     elif args.cmd == "analyze":
         report.analyze(args.files, args.out, min_score=cfg["select"]["min_score"], student=cfg["student"]["tokenizer"])
     elif args.cmd == "filter":

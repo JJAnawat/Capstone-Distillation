@@ -1,9 +1,10 @@
 """Rate each question's reasoning complexity 1-5 with the "Reasoning Complexity Rating Prompt" of DeReason
 (Hu et al. 2026, arXiv:2603.11193, Appendix A.1). `select` uses the ratings to order the data from easy to hard."""
 import re
+from pathlib import Path
 
-from distill import data, server
-from distill.generate import load_template, read_done_keys
+from distill import data, report, server
+from distill.generate import load_template
 
 RATING = re.compile(r"ReasoningRequired\W*([1-5])")
 
@@ -23,7 +24,8 @@ def run(cfg, dataset, only=None, limit=None, seed=None, concurrency=None, backen
     system, user, prompt_hash = load_template("rate", rc["prompt_version"])
     out = out or data.complexity_path(dataset)
     rows = data.select_rows(cfg, dataset, "open", only, limit, seed)
-    done = {rid for rid, _ in read_done_keys(out)}
+    # A rating without a level (the analysis ran past max_tokens) is asked again; load_complexity keeps the last line.
+    done = {j["id"] for j in report.iter_jsonl(out) if j.get("complexity") is not None} if Path(out).exists() else set()
     todo = [r for r in rows if r["id"] not in done]
     print(f"[rate] {dataset}: {len(rows)} prompts, {len(rows) - len(todo)} already rated, {len(todo)} to run")
     if not todo:

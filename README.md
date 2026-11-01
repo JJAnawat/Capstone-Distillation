@@ -336,11 +336,19 @@ About 6k Thai rows are added next to the English ones (about 1:2). The English r
     `translate.min_meaning` (4.0). It writes the prompts sorted by id.
   - `similarity` (BGE-M3 cosine, extra `qe`) is no longer part of the run: in the comparison it did not tell good
     translations from bad ones. The command stays for manual use.
-- **Later stages:** `rate` rates the English original (`input_en`), so the levels match the English rows. Thai
-  rationales are counted in PyThaiNLP words, and the filter also checks the rationale's language. `verify` accepts
-  `คำตอบสุดท้าย:` as well as `Final answer:`.
-- **Teacher prompts:** the English ones (`open_v2`, `open_closed_v2`, `compress_v3`). They already ask for the
-  language of the question, so Qwen answers and compresses in Thai.
+- **Later stages:**
+  - `rate` rates the English original (`input_en`), so the levels match the English rows.
+  - Thai rationales are counted in PyThaiNLP words.
+  - The filter checks the answer and the rationale against Thai on Thai rows (`lang: th`). On other rows it checks
+    them against lingua's reading of the prompt. A Thai prompt full of English names or code can read as English.
+  - `verify` accepts `คำตอบสุดท้าย:` as well as `Final answer:`.
+- **Teacher prompts:** the English ones (`open_v2`, `open_closed_v2`), which ask for the language of the question.
+  - Compress uses `compress_v4` on translated rows (`compress.translated_prompt_version`). That is `compress_v3` word
+    for word, except "Write every step in {language}" (`translate.target`).
+  - Qwen thinks in English, and v3's "the same language as the question" let ~590 of night 1's Thai rationales come
+    out in English.
+  - `compress --redo-wrong-language` (or `REDO_LANGUAGE=1` for the scripts) first drops translated rows whose
+    rationale is in another language, so they are compressed again.
 
 **Translator comparison** (once, before the Thai run): the first `translate.compare_limit` (13) prompts of each set,
 translated by Qwen (teacher), Gemma (judge) and Typhoon Translate 1.5 (role `typhoon`; comparison only). That makes
@@ -368,18 +376,23 @@ well as Gemma, `translate.checker: checker` makes it check Gemma's translations 
 ```bash
 distill translate --dataset logiqa_th --dry-run            # pool left after excluding the English ids; no server
 tmux new -s thai 'LIMIT=500 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'    # night 1: prep + 500 per set
-tmux new -s thai 'LIMIT=1200 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'   # night 2: 700 more per set
-tmux new -s thai 'LIMIT=0 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'      # night 3: the rest
+# night 2: every remaining open prompt, LogiQA up to 1,200 (~2,700 rows), and night 1's English rationales redone
+tmux new -s thai 'REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'
 ```
+`LIMIT_CLOSED` caps the closed set (LogiQA) separately. LogiQA gives about 2.3 rows per prompt, because a closed
+prompt keeps up to 3 distinct correct samples.
 - **Prep** runs once, for each set without a prepared file: translate (translate.translator), check
   (translate.checker), build, and a backup of `data/translate`. The prompt pool then stays fixed.
 - **Distillation** runs `pipeline.sh` on `LIMIT` prompts per Thai set (variant B, `OUT=data/full_th`).
   - The sampler is nested, so a later run with a larger `LIMIT` only adds prompts, and `LIMIT=0` takes the rest.
   - Each run ends with final rows for every prompt done so far, on the Hub.
-  - With a `LIMIT`, each model loads once per run (`BY_SET=0`). An unlimited run goes set by set (`BY_SET=1`), so a
-    cut still leaves finished sets.
-- **Timing:** a run takes about 25 min plus 23 s of GPU time for each prompt added per set (English-run rates, plus
-  15% for Thai). Prep takes about 1.5 h more on the first night.
+  - With a `LIMIT` or `LIMIT_CLOSED`, each model loads once per run (`BY_SET=0`). An unlimited run goes set by set
+    (`BY_SET=1`), so a cut still leaves finished sets.
+- **Timing (night 1's measurements):**
+  - Each prompt takes 4.2–4.6 s in an open set and 7.2 s in LogiQA (generate + compress + judge). Thai costs no
+    more than English.
+  - Each run adds about 10 min for model loads.
+  - Prep took 86 min on the first night.
 - **Resume:** everything resumes, so a run cut by the stopper continues on the next run with the same or a higher
   `LIMIT`.
 

@@ -12,6 +12,7 @@
 #   JUDGE_ALL_CLOSED  1 = judge rule-failing closed samples too (judge-vs-rules check)     [0]
 #   VALIDATE_PROMPTS  judge rubric versions to validate, e.g. "v1 v2"            [config version]
 #   BY_SET    1 = run each set through teacher, judge and select before the next (time-boxed runs)  [0]
+#   REDO_LANGUAGE  1 = compress first drops translated rows whose rationale is in the wrong language, to redo them [0]
 #   OUT, REPORT  output directory and report path                       [data/pilot2, reports/pilot2.md]
 # Stop with Ctrl-C: the server is shut down and the next run resumes where this one stopped.
 # After each finished set, `distill push` backs up $OUT to the private Hub repo in config hub.repo (if set).
@@ -27,6 +28,7 @@ DATASETS=${DATASETS:-"no_robots helpsteer2 ultrafeedback"}
 VALIDATE=${VALIDATE:-300}
 JUDGE_ALL_CLOSED=${JUDGE_ALL_CLOSED:-0}
 BY_SET=${BY_SET:-0}
+REDO_LANGUAGE=${REDO_LANGUAGE:-0}
 OUT=${OUT:-data/pilot2}
 REPORT=${REPORT:-reports/pilot2.md}
 
@@ -64,7 +66,8 @@ teacher_stage() {  # SET...: rate, generate and compress with one teacher server
     if has "$VARIANTS" B; then
       with_server teacher distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" \
         --mode open --thinking on "${BK[@]}" --out "$OUT/${name}_B_raw.jsonl"
-      with_server teacher distill compress "$OUT/${name}_B_raw.jsonl" "${BK[@]}" --out "$OUT/${name}_B.jsonl"
+      REDO=(); if [ "$REDO_LANGUAGE" = 1 ]; then REDO=(--redo-wrong-language); fi
+      with_server teacher distill compress "$OUT/${name}_B_raw.jsonl" "${REDO[@]}" "${BK[@]}" --out "$OUT/${name}_B.jsonl"
     fi
   done
   stop

@@ -312,6 +312,15 @@ def _detector():
     return LanguageDetectorBuilder.from_all_languages().build()
 
 
+def expected_language(r, min_chars):
+    """The language a sample's answer and rationale should be in: Thai for a translated row (`lang: th`), else the
+    prompt's (lingua on a Thai prompt full of English names or code can read it as English)."""
+    if r.get("lang") == "th":
+        from lingua import Language
+        return Language.THAI
+    return detect_language(r["input"], min_chars)
+
+
 def detect_language(text, min_chars):
     text = re.sub(r"```.*?```", " ", text, flags=re.S)  # code says nothing about natural language
     if len(text.strip()) < min_chars:
@@ -342,7 +351,7 @@ def rejection_reasons(r, fcfg, max_reasoning_tokens=None, max_rationale_words=No
         reasons.append("finish_not_stop")
     if answer.strip() and not any(re.search(p, r["input"], re.I) for p in fcfg["language_skip_patterns"]):
         # The rationale too: compress may write English steps for a Thai question from an English thinking trace.
-        lp = detect_language(r["input"], fcfg["language"]["min_chars"])
+        lp = expected_language(r, fcfg["language"]["min_chars"])
         found = [detect_language(t, fcfg["language"]["min_chars"]) for t in (answer, rationale)]
         if lp and any(la and la != lp for la in found):
             reasons.append("language_mismatch")

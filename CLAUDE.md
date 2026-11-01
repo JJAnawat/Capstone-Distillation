@@ -319,15 +319,31 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
          - About 590 because `compress` wrote English steps for a Thai question, from Qwen's English thinking.
          - About 110 because lingua read a Thai prompt heavy with English names or code as English, so a Thai
            answer looked mismatched.
-         - 28 / 54 / 49 open prompts lost every sample to this. A fix was proposed before night 2.
-       - LogiQA: 34 of 500 got no complexity rating. Some LogiQA rationales end with a `Final answer:` line.
-  3. **G2, night 2:** `LIMIT=1200` (~5.0 h). **Night 3:** `LIMIT=0`, the rest (~1.8 h). That's about 6.5k Thai rows
-     in total.
-     - The estimates use the English run's rates (open sets 3.8–4.9 s per prompt, LogiQA 7.7 s, so about 23 s per
-       prompt per set across the four sets) with 15% added for Thai, plus about 25 min per run for model loads and
-       backups.
-     - Night 1 measures the real speed: re-estimate nights 2–3 from it.
-     - Look at night 1's final rows before night 2.
+         - 28 / 54 / 49 open prompts lost every sample to this.
+       - LogiQA: 34 of 500 got no complexity rating, because the rater's analysis ran past `rate.max_tokens` 1,024
+         (English: 158 of 2,500, the same cause).
+       - **Why LogiQA gives about 2 rows per prompt:**
+         - By design, a closed prompt keeps up to 3 distinct correct samples (`k_closed: 3`, SCoTD), and most had
+           all 4 correct.
+         - Thai gives 2.27 rows per prompt against English 1.87. Only 16% of prompts were dropped (English 22%):
+           1% for a best score below 7, against English's 12%, where the judge marked down verbose answers. And 77%
+           of kept prompts kept all 3 samples, against 60%.
+     - **The fixes for night 2 (the user's decisions, 2026-11-01):**
+       - The filter expects Thai on `lang: th` rows (`report.expected_language`).
+       - Compress uses `compress_v4` on translated rows. It is v3 with "Write every step in {language}" instead of
+         "the same language as the question". The user approved changing that one sentence, after rejecting the
+         Thai prompts.
+       - `REDO_LANGUAGE=1` redoes night 1's English-step samples (`compress --redo-wrong-language`).
+       - `rate.max_tokens` is 2048, and ratings without a level are asked again.
+       - Thai LogiQA is capped at 1,200 prompts, about 2,700 rows (`LIMIT_CLOSED=1200`).
+       - The copied `Final answer:` line stays in the rationales. It's in 91% of Thai and 74% of English LogiQA
+         rationales; the user left it for the training stage.
+  3. **G2, night 2 (about 4.4 h):** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh`.
+     - It takes every remaining open prompt (No Robots 775, HelpSteer2 792, UltraFeedback 652) and 700 more LogiQA,
+       plus the redo.
+     - The estimate uses night 1's rates (open 4.2–4.6 s per prompt, LogiQA 7.2 s) plus about 20 min for model
+       loads, the redo and the re-rating.
+     - **Expected: about 5.9–6.1k Thai rows, and the Thai set is done in two nights.** Night 3 isn't needed.
 - **Also open with the user** (no GPU): LogiQA's verbose answers (Night 3 above): `answer` often repeats the
   rationale. And how a row maps onto the student's chat template, which belongs to the training stage.
 - **Models moved off /dev/shm (2026-10-27):** `.vm_env` now sets `HF_HOME=$HOME/hf` and
