@@ -112,15 +112,19 @@ checker:
 # models, so they run in-process with transformers (`hf:`), not behind vLLM. A prompt is split into lines and
 # sentences of at most max_chars, translated, and put back together (translate.split_for_mt). Licenses for our use:
 # Seed-X OpenMDW-1.0 (outputs unrestricted), MADLAD-400 Apache-2.0, NLLB-200 CC BY-NC 4.0 (this project is NC).
+# max_new_tokens = min(max_new_tokens, max_new_ratio x input tokens + 16). Thai takes far more tokens than English in
+# Seed-X's tokenizer (median 3.7x, max 5.4x on the pool) than in NLLB's or MADLAD's (at most 2x): at 2x, 17 of
+# Seed-X's 40 translations were cut off.
 seedx:   # translation-tuned 7B LLM without a chat template; the prompt ends in the target-language tag
   hf: {model: ByteDance-Seed/Seed-X-PPO-7B, kind: causal, dtype: bfloat16, num_beams: 4, batch_size: 16,
-       max_chars: 600, prompt: "Translate the following English sentence into Thai:\n{text} <th>"}
+       max_chars: 600, max_new_ratio: 6, max_new_tokens: 1024,
+       prompt: "Translate the following English sentence into Thai:\n{text} <th>"}
 madlad:  # T5 encoder-decoder, the target language as a prefix tag
   hf: {model: google/madlad400-10b-mt, kind: seq2seq, dtype: bfloat16, prefix: "<2th> ", num_beams: 4,
-       batch_size: 8, max_chars: 600}   # 16 x 4 beams ran out of memory on long UltraFeedback passages
+       batch_size: 8, max_chars: 600, max_new_ratio: 2.5, max_new_tokens: 512}   # batches of 16 ran out of memory
 nllb:    # M2M100 encoder-decoder, source and target language codes
   hf: {model: facebook/nllb-200-3.3B, kind: seq2seq, dtype: bfloat16, src_lang: eng_Latn, tgt_lang: tha_Thai,
-       num_beams: 4, batch_size: 32, max_chars: 600}
+       num_beams: 4, batch_size: 32, max_chars: 600, max_new_ratio: 2.5, max_new_tokens: 512}
 
 # Qwen3.5-9B model card, "general tasks" settings. Every field is sent: a local vLLM server fills unsent fields
 # from the model's generation_config.json.

@@ -219,7 +219,7 @@ def load_engine(h):
         """Translate pieces[idx] in one generate call; on running out of GPU memory, retry as two halves."""
         try:
             enc = tok([wrap(pieces[i]) for i in idx], return_tensors="pt", padding=True).to(device)
-            cap = min(512, 2 * enc["input_ids"].shape[1] + 16)
+            cap = min(h.get("max_new_tokens", 512), int(h.get("max_new_ratio", 2.5) * enc["input_ids"].shape[1]) + 16)
             with torch.no_grad():
                 gen = model.generate(**enc, num_beams=h.get("num_beams", 1), do_sample=False, max_new_tokens=cap,
                                      **extra)
