@@ -188,7 +188,8 @@ retried on the next run.
   otherwise 4) and the step limit (`cot.max_steps_by_complexity`: 4, 5, 6, 8, 10 for levels 1–5, 6 when unrated,
   about 40 words a step). The filter only rejects runaway rationales (over 600 words); the student's budget is the real
   limit.
-- **Thinking:** vLLM gets `chat_template_kwargs.enable_thinking` and returns the thinking in `reasoning_content`; its
+- **Thinking:** vLLM gets `chat_template_kwargs.enable_thinking` and returns the thinking in `reasoning` (before vLLM
+  0.32: `reasoning_content`; `server.reasoning_text` reads both); its
   token count comes from `/tokenize`. With thinking off, a reply filed under reasoning is moved back to the answer, and
   inline `<think>…</think>` is split out.
 - **compress** rewrites each finished trace into numbered steps that reach the same answer, with no new facts and no

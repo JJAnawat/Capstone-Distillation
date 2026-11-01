@@ -357,9 +357,9 @@ def test_card_keeps_english_configs_and_names_thai_subsets(tmp_path, monkeypatch
 
 
 
-def test_parse_check_needs_both_scores_and_reads_reasoning_content():
+def test_parse_check_needs_both_scores_and_reads_the_reasoning_field():
     with pytest.raises(ValueError, match="no valid scores"):
         translate.parse_check(completion('{"english_only": true, "critique": "x", "meaning": 7}'))
-    choice = {"message": {"content": "", "reasoning_content": '{"english_only": false, "critique": "ok", '
+    choice = {"message": {"content": "", "reasoning": '{"english_only": false, "critique": "ok", '
                                                             '"fluency": 5, "meaning": 4}'}}
     assert translate.parse_check({"choices": [choice]})[2] == 4

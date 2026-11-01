@@ -8,8 +8,8 @@ CFG = yaml.safe_load(open("config.yaml", encoding="utf-8"))
 
 
 def completion(content, reasoning=None, finish="stop", reasoning_tokens=0, completion_tokens=50, logprobs=None):
-    """A vLLM chat completion (the reasoning parser puts the thinking in `reasoning_content`)."""
-    choice = {"finish_reason": finish, "message": {"content": content, "reasoning_content": reasoning}}
+    """A vLLM 0.32 chat completion: the reasoning parser puts the thinking in `reasoning`."""
+    choice = {"finish_reason": finish, "message": {"content": content, "reasoning": reasoning}}
     if logprobs is not None:
         choice["logprobs"] = logprobs
     return {"choices": [choice], "usage": {"prompt_tokens": 10, "completion_tokens": completion_tokens,

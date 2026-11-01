@@ -40,7 +40,7 @@ def parse_response(j, thinking=True, cot=False):
     choice = j["choices"][0]
     msg = choice["message"]
     content = msg.get("content") or ""
-    reasoning = msg.get("reasoning_content") or ""
+    reasoning = server.reasoning_text(msg)
     if not thinking and not content.strip():  # vLLM's reasoning parser can file a thinking-off reply as reasoning
         content, reasoning = reasoning, ""
     think_unclosed = False

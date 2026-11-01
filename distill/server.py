@@ -33,6 +33,11 @@ def make_client(ep, concurrency=None):
                         limits=httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency))
 
 
+def reasoning_text(msg):
+    """A reply's thinking. vLLM 0.32 sends it as `reasoning`; `reasoning_content` is the older, deprecated name."""
+    return msg.get("reasoning") or msg.get("reasoning_content") or ""
+
+
 def build_body(ep, messages, sampling, thinking, seed, max_tokens, **extra):
     """Chat-completions body; vLLM takes the thinking switch as a chat-template argument."""
     return {"model": ep["model"], "messages": messages, "max_tokens": max_tokens, "seed": seed, **sampling, **extra,

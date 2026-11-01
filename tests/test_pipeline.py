@@ -29,6 +29,8 @@ def row(**kw):
 @pytest.mark.parametrize("reply, kw, expected", [
     (completion("\n\n391", reasoning="17*23=391", reasoning_tokens=40), {},
      {"reasoning": "17*23=391", "answer": "391", "reasoning_tokens": 40, "answer_tokens": 10}),
+    ({"choices": [{"finish_reason": "stop", "message": {"content": "391", "reasoning_content": "17*23=391"}}]}, {},
+     {"reasoning": "17*23=391", "answer": "391"}),  # the field's older name, before vLLM 0.32
     (completion("", reasoning="Hello there."), {"thinking": False},  # vLLM's parser filed a thinking-off reply
      {"answer": "Hello there.", "reasoning": ""}),
     (completion("<think>step one</think>\n\nFinal: 4"), {},

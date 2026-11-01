@@ -40,7 +40,7 @@ def run(cfg, dataset, only=None, limit=None, seed=None, concurrency=None, client
         body = server.build_body(ep, messages, {"temperature": rc["temperature"]}, False, seed, rc["max_tokens"])
         j = server.call_api(client, body, cfg["generate"]["max_retries"])
         msg = j["choices"][0]["message"]
-        complexity, analysis = parse_rating(msg.get("content") or msg.get("reasoning_content") or "")
+        complexity, analysis = parse_rating(msg.get("content") or server.reasoning_text(msg))
         rec = {"id": r["id"], "complexity": complexity, "analysis": analysis, "model": ep["model"],
                "prompt_hash": prompt_hash}
         return rec, (j.get("usage") or {}).get("completion_tokens", 0)

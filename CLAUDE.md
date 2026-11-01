@@ -76,9 +76,10 @@ check-translation → build-translated, then the same stages.
 - Match the existing style: compact functions, module docstrings, few comments.
 
 ## Gotchas
-- **vLLM:** a local server fills unsent sampling fields from generation_config.json, so send all six. Reasoning comes
-  in `reasoning_content`, and with thinking off the parser can file the whole reply there (`parse_response` handles
-  it). Usage has no reasoning-token count, so `generate` asks `/tokenize`. Gemma 4 emits an empty thought block even
+- **vLLM:** a local server fills unsent sampling fields from generation_config.json, so send all six. vLLM 0.32 sends
+  the thinking as `reasoning` (`reasoning_content` is the deprecated old name; `server.reasoning_text` reads both).
+  Dropping `reasoning` in the cleanup cost night 2 its first 2,174 samples. With thinking off the parser can file the
+  whole reply there (`parse_response` handles it). Usage has no reasoning-token count, so `generate` asks `/tokenize`. Gemma 4 emits an empty thought block even
   with thinking off (`judge.strip_thought`).
 - **httpx** allows 100 connections by default; `server.make_client` raises it to the concurrency.
 - **Ctrl-C in a tmux pane** hits vLLM too and can deadlock on open connections: `run_pool` drops queued work and
