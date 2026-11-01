@@ -1,6 +1,6 @@
 """Command line entry point: distill prepare | subsets | serve | wait | rate | generate | compress | filter | judge |
 select | analyze | push, and for the Thai sets translate | check-translation | similarity | build-translated |
-compare-sheet | compare-report."""
+compare-sheet | compare-report | compare-pick | compare-translate | checker-sample | checker-pick | checker-report."""
 import argparse
 import os
 import sys
@@ -11,8 +11,9 @@ from dotenv import load_dotenv
 from distill import compress, data, generate, hub, judge, rate, report, selection, server, translate
 
 BACKENDS = ["vllm", "openrouter"]
-ROLES = ["teacher", "judge", "typhoon", "checker"]  # typhoon: comparison only; checker: another-family checker
+ROLES = ["teacher", "judge", "typhoon", "checker", "typhoon25"]  # typhoon: comparison only; the rest: other checkers
 MT_ROLES = ["seedx", "madlad", "nllb"]  # sentence-level translators, run in-process with transformers (config `hf:`)
+METRIC_ROLES = ["metricx", "cometkiwi"]  # translation-quality metrics as checkers, in-process (config `metric:`)
 ONLY_HELP = "only prompts with (closed) or without (open) a known short answer"
 
 
@@ -123,7 +124,7 @@ def run(argv=None):
     t.add_argument("--backend", choices=BACKENDS)
     ct = sub.add_parser("check-translation", help="checker: English-bound task?, fluency and meaning (1-5)")
     ct.add_argument("files", nargs="+")
-    ct.add_argument("--role", choices=ROLES, help="the checking model (default: config translate.checker)")
+    ct.add_argument("--role", choices=ROLES + METRIC_ROLES, help="the checking model (default: translate.checker)")
     ct.add_argument("--concurrency", type=int)
     ct.add_argument("--backend", choices=BACKENDS)
     sub.add_parser("similarity", help="embedding cosine of English and Thai prompts (CPU)").add_argument(
@@ -144,6 +145,19 @@ def run(argv=None):
     ctr = sub.add_parser("compare-translate", help="translate a comparison pool's questions with another translator")
     ctr.add_argument("--role", choices=ROLES + MT_ROLES, required=True)
     ctr.add_argument("--dir", required=True)
+    ks = sub.add_parser("checker-sample", help="a sample of the translations for the candidate checkers to score")
+    ks.add_argument("--per-set", type=int, required=True)
+    ks.add_argument("--out-dir", required=True)
+    kp = sub.add_parser("checker-pick", help="the checker comparison's pool: where other checkers and the judge disagree")
+    kp.add_argument("--roles", nargs="+", choices=ROLES + METRIC_ROLES, required=True, help="the candidate checkers")
+    kp.add_argument("--from", dest="src_dir", help="the scored translations (default: data/translate)")
+    kp.add_argument("--out-dir", required=True)
+    kp.add_argument("--per-group", type=int, default=15)
+    kp.add_argument("--random", type=int, default=20, help="translations every checker passes (the baseline)")
+    kr = sub.add_parser("checker-report", help="read the graded checker pool and write the report")
+    kr.add_argument("xlsx")
+    kr.add_argument("--out", default="reports/checker_compare.md")
+    kr.add_argument("--picks", help="default: picks.json next to the pool files named in the sheet's key")
 
     p = sub.add_parser("push", help="back up a run and the ratings to a private Hugging Face dataset repo")
     p.add_argument("out", help="the run's output directory, e.g. data/full")
@@ -210,6 +224,13 @@ def run(argv=None):
         translate.compare_pick(cfg, args.per_set, args.out_dir, args.exclude_run)
     elif args.cmd == "compare-translate":
         translate.compare_translate(cfg, args.role, args.dir)
+    elif args.cmd == "checker-sample":
+        translate.checker_sample(cfg, args.per_set, args.out_dir)
+    elif args.cmd == "checker-pick":
+        translate.checker_pick(cfg, args.out_dir, args.roles, per_group=args.per_group, random_n=args.random,
+                               src_dir=args.src_dir)
+    elif args.cmd == "checker-report":
+        translate.checker_report(args.xlsx, args.out, picks=args.picks)
     elif args.cmd == "push":
         hub.push(cfg, args.out, repo=args.repo)
 

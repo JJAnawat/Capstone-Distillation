@@ -1,6 +1,8 @@
 """Thai sets: translate questions the English run never used, check each translation (rules, the judge, embedding
 similarity), and build the Thai prepared file that the rest of the pipeline distills. Also the translator comparison:
-a grading sheet for the user, and a report that picks the translator and calibrates the automatic checks."""
+a grading sheet for the user, and a report that picks the translator and calibrates the automatic checks; and the
+checker comparison: other checkers (translation-quality metrics, a Thai-tuned model) against the judge, graded on the
+translations where they disagree."""
 import json
 import math
 import random
@@ -342,12 +344,20 @@ def check_path(path, role):
     return f"{stem(path)}.check.jsonl" if role == "judge" else f"{stem(path)}.check_{role}.jsonl"
 
 
+def quality(chk):
+    """A check's score, higher is better: a metric checker's `quality`, or a model checker's expected meaning."""
+    return None if not chk else chk.get("quality", chk.get("meaning_expected"))
+
+
 def check(cfg, path, role=None, concurrency=None, backend=None, client=None):
     """A checker model (`role`, default translate.checker) reads the English and Thai prompt: is the task bound to
     English, and how fluent and faithful (1-5) is the translation? `meaning` comes last in the JSON, so its token is
-    the last digit and its logprobs give `meaning_expected`, a continuous score for the threshold."""
+    the last digit and its logprobs give `meaning_expected`, a continuous score for the threshold. A role with a
+    `metric:` block (MetricX, CometKiwi) runs in-process instead (`metric_check`)."""
     tc = cfg["translate"]
     role = role or tc.get("checker") or "judge"
+    if "metric" in cfg[role]:
+        return metric_check(cfg, path, role)
     jc = {**judge.judge_config(cfg), "max_tokens": cfg["translate"]["check_max_tokens"]}
     ep = server.endpoint(cfg, role, backend)
     system, user, prompt_hash = load_template("translation_check", tc["check_prompt_version"])
@@ -373,6 +383,139 @@ def check(cfg, path, role=None, concurrency=None, backend=None, client=None):
 
     return server.run_pool("check", work, todo, out, concurrency, lambda r: {"id": r["id"]}, input=str(path),
                            role=role, backend=ep["backend"], model=ep["model"])
+
+
+# ---------------------------------------------------------------- metric checkers (in-process)
+
+SPLITS = ((re.compile(r"\n\s*\n"), "\n\n"), (re.compile(r"\n"), "\n"))  # paragraphs, then lines
+METRICX_SCORE_ID = 250089  # <extra_id_10>: MetricX-24 reads its score from this logit
+
+
+def aligned_pieces(en, th, fits, level=0):
+    """(pieces, truncated): (English, Thai) pairs a metric model can read whole. The pair itself when it fits; else its
+    paragraphs, paired in order (the translator keeps the formatting) and grouped while they fit, and a paragraph pair
+    still too long goes down to its lines. When the counts differ the pair cannot be aligned at that level; with no
+    level left the model reads it cut (truncated)."""
+    if fits(en, th):
+        return [(en, th)], False
+    if level == len(SPLITS):
+        return [(en, th)], True
+    split, sep = SPLITS[level]
+    a, b = ([p for p in split.split(t) if p.strip()] for t in (en, th))
+    if len(a) != len(b) or len(a) < 2:
+        return aligned_pieces(en, th, fits, level + 1)
+    pieces, truncated, cur = [], False, None
+    for pair in zip(a, b):
+        joined = cur and (cur[0] + sep + pair[0], cur[1] + sep + pair[1])
+        if joined and fits(*joined):
+            cur = joined
+            continue
+        if cur:
+            pieces.append(cur)
+        cur = pair
+        if not fits(*pair):
+            sub, cut = aligned_pieces(*pair, fits, level + 1)
+            pieces, truncated, cur = pieces + sub, truncated or cut, None
+    return pieces + ([cur] if cur else []), truncated
+
+
+def metricx_text(en, th):
+    """MetricX-24's input in QE mode (no reference), as in its repo's predict.py."""
+    return f"source: {en} candidate: {th}"
+
+
+def in_halves(fn, idx):
+    """fn(idx), retried as two halves (and so on) when the GPU runs out of memory."""
+    import torch
+    try:
+        fn(idx)
+    except torch.OutOfMemoryError:
+        if len(idx) == 1:
+            raise
+        torch.cuda.empty_cache()
+        in_halves(fn, idx[:len(idx) // 2])
+        in_halves(fn, idx[len(idx) // 2:])
+
+
+def load_metric(m):
+    """(score, fits) for a `metric:` role: score(pairs) -> raw scores, fits(en, th) -> whether a pair fits the model's
+    input whole.
+    - `metricx`: MetricX-24's MT5ForRegression is MT5ForConditionalGeneration read at one decoder step from token 0:
+      the logit of <extra_id_10>, clamped to 0-25 (an error score, lower is better). The input's final eos is dropped,
+      as the repo does.
+    - `comet`: CometKiwi through unbabel-comet (installed in .venv-comet, not vLLM's venv): 0-1, higher is better."""
+    import torch
+    gpu = torch.cuda.is_available()
+    if m["kind"] == "comet":
+        from comet import download_model, load_from_checkpoint
+        model = load_from_checkpoint(download_model(m["model"]))
+        size = lambda t: len(model.encoder.tokenizer(t, add_special_tokens=False)["input_ids"])
+        fits = lambda en, th: size(en) + size(th) + 4 <= m["max_tokens"]  # <s> th </s></s> en </s>
+        score = lambda pairs: list(model.predict([{"src": en, "mt": th} for en, th in pairs], progress_bar=False,
+                                                 batch_size=m.get("batch_size", 16), gpus=int(gpu)).scores)
+        return score, fits
+    import transformers as tf
+    device = "cuda" if gpu else "cpu"
+    tok = tf.AutoTokenizer.from_pretrained(m["tokenizer"])
+    model = tf.MT5ForConditionalGeneration.from_pretrained(m["model"], dtype=getattr(torch, m.get("dtype", "bfloat16")))
+    model = model.to(device).eval()
+    ids = lambda en, th: tok(metricx_text(en, th))["input_ids"][:-1]
+    fits = lambda en, th: len(ids(en, th)) < m["max_tokens"]
+
+    def score(pairs):
+        enc = [ids(en, th)[:m["max_tokens"] - 1] for en, th in pairs]
+        out = [0.0] * len(pairs)
+
+        def batch(idx):
+            width = max(len(enc[i]) for i in idx)
+            input_ids = torch.tensor([enc[i] + [tok.pad_token_id] * (width - len(enc[i])) for i in idx], device=device)
+            mask = (input_ids != tok.pad_token_id).long()
+            start = torch.zeros(len(idx), 1, dtype=torch.long, device=device)
+            with torch.no_grad():
+                logits = model(input_ids=input_ids, attention_mask=mask, decoder_input_ids=start).logits
+            for i, s in zip(idx, logits[:, 0, METRICX_SCORE_ID].clamp(0, 25).float().tolist()):
+                out[i] = s
+        order, size = sorted(range(len(pairs)), key=lambda i: len(enc[i])), m.get("batch_size", 8)
+        for b in range(0, len(order), size):
+            in_halves(batch, order[b:b + size])
+        return out
+    return score, fits
+
+
+@lru_cache(maxsize=1)
+def metric_engine(spec):
+    """`load_metric` for a `metric:` role given as JSON, cached: a model loads once per process, whatever the files."""
+    return load_metric(json.loads(spec))
+
+
+def metric_check(cfg, path, role, block=512):
+    """A metric checker scores each translation against its English, with no reference translation (QE). A pair too
+    long for the model is read in aligned pieces (`aligned_pieces`), and its worst piece decides. `quality` is
+    higher-is-better for every checker: MetricX's error negated, CometKiwi's score as is; `raw` is the model's own
+    score. Written `block` translations at a time, so a cut run resumes by id."""
+    m = cfg[role]["metric"]
+    out = check_path(path, role)
+    done = {rid for rid, _ in read_done_keys(out)}
+    todo = [r for r in report.iter_jsonl(path) if r["id"] not in done and (r.get("input") or "").strip()]
+    print(f"[check] {path} by the {role} ({m['model']}): {len(done)} already checked, {len(todo)} to run")
+    if not todo:
+        return {}
+    start, (score, fits) = time.time(), metric_engine(json.dumps(m, sort_keys=True))
+    error = m["kind"] == "metricx"
+    stats = Counter()
+    for b in range(0, len(todo), block):
+        rows = todo[b:b + block]
+        split = [aligned_pieces(r["input_en"], r["input"], fits) for r in rows]
+        raw = iter(score([p for pieces, _ in split for p in pieces]))
+        with open(out, "a", encoding="utf-8") as f:
+            for r, (pieces, cut) in zip(rows, split):
+                s = (max if error else min)(next(raw) for _ in pieces)
+                stats.update(scored=1, in_pieces=len(pieces) > 1, truncated=cut)
+                f.write(json.dumps({"id": r["id"], "quality": round(-s if error else s, 4), "raw": round(s, 4),
+                                    "pieces": len(pieces), "truncated": cut, "judge_model": m["model"]}) + "\n")
+    print(f"[check] {path}: {stats['scored']} scored in {(time.time() - start) / 60:.1f} min, "
+          f"{stats['in_pieces']} read in pieces, {stats['truncated']} truncated")
+    return dict(stats)
 
 
 def cosine(a, b):
@@ -438,11 +581,15 @@ def build(cfg, dataset, path=None):
     """Write data/prepared/<dataset>.jsonl from the translations that pass every check (translate.checker's), in the
     prepared-row schema plus `input_en`, `lang` and `translation`, so every later stage reads it like any other
     dataset. Rows are sorted by id: the seeded sample of each run, and so the continuation of a larger LIMIT, then
-    does not depend on the order in which the translations finished."""
+    does not depend on the order in which the translations finished.
+    A gate (translate.gates: a checker role and the `quality` a translation needs, missing counting as failed) was
+    added after night 1: a row that fails it keeps its place with `translation.gate_failed`, and the stages skip it
+    after sampling (`data.select_rows`, `selection.run`). Dropping it here would reshuffle the seeded sample."""
     tc = cfg["translate"]
     path = path or TRANSLATE_DIR / f"{dataset}.jsonl"
     checks = by_id(check_path(path, tc.get("checker") or "judge"))
     sims = by_id(f"{stem(path)}.similarity.jsonl")
+    gates = [(g["role"], g["min_quality"], by_id(check_path(path, g["role"]))) for g in tc.get("gates") or []]
     stats, rows = Counter(), []
     for rec in report.iter_jsonl(path):
         chk, sim = checks.get(rec["id"]), sims.get(rec["id"])
@@ -450,13 +597,16 @@ def build(cfg, dataset, path=None):
         if reason := drop_reason(rec, chk, sim, tc):
             stats[f"dropped: {reason}"] += 1
             continue
+        failed = [role for role, low, gc in gates if (q := quality(gc.get(rec["id"]))) is None or q < low]
+        stats.update(f"gated: {role}" for role in failed[:1])
         rows.append({"id": rec["id"], "input": rec["input"], "strata": rec.get("strata"), "multi_turn": False,
                      "reference": rec.get("reference"), "ratings": {}, "gold": thai_gold(rec),
                      "source_dataset": dataset, "hint_ok": rec.get("hint_ok", False) and bool(rec.get("reference")),
                      "closed": rec.get("closed", False), "lang": "th", "input_en": rec["input_en"],
                      "translation": {"model": rec["translator"]["model"], "checker": chk.get("judge_model"),
                                      "meaning": chk["meaning_expected"], "fluency": chk["fluency"],
-                                     "similarity": sim and sim["similarity"]}})
+                                     "similarity": sim and sim["similarity"],
+                                     **({"gate_failed": failed} if failed else {})}})
     stats["kept"] = len(rows)
     data.PREPARED_DIR.mkdir(parents=True, exist_ok=True)
     report.write_jsonl(data.PREPARED_DIR / f"{dataset}.jsonl", sorted(rows, key=lambda r: r["id"]))
@@ -471,8 +621,8 @@ def build(cfg, dataset, path=None):
 # ---------------------------------------------------------------- translator comparison
 
 GUIDE = [
-    ("Grade each Thai translation of the English prompt. Model names are hidden; three translations of a prompt sit "
-     "next to each other in random order.", ""),
+    ("Grade each Thai translation of the English prompt. Model names are hidden; when a prompt has several "
+     "translations, they sit next to each other in random order.", ""),
     ("meaning (1-5)", "Does the Thai ask for exactly the same thing?"),
     ("5", "The same request: every instruction, constraint, number, name, negation and answer option kept, "
           "nothing added."),
@@ -648,7 +798,9 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
     - Only graded cells count. Translators are compared on the prompts whose translations are all graded for meaning,
       so a sheet graded part of the way stays fair; the signals use every graded translation.
     - A translation with no Thai letters at all is an untranslated copy and counts as meaning 1, as the grading
-      guide's scale says, whatever it was graded."""
+      guide's scale says, whatever it was graded.
+    - A metric checker (MetricX, CometKiwi) has a `quality` score on its own scale and no fluency: its thresholds are
+      where it keeps 98% to 85% of the good translations, and the lean table leaves it out."""
     key = {int(k): v for k, v in json.loads(Path(f"{str(xlsx).removesuffix('.xlsx')}_key.json")
                                           .read_text(encoding="utf-8")).items()}
     grades, bad = read_grades(xlsx)
@@ -656,6 +808,8 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
     roles = sorted({role for _, checks, _ in files.values() for role in checks}, key=lambda r: (r != "judge", r))
     models = {role: next(c.get("judge_model") or role for _, checks, _ in files.values() if role in checks
                          for c in checks[role].values()) for role in roles}
+    rated = [role for role in roles if any(c.get("meaning") is not None for _, checks, _ in files.values()
+                                           for c in checks.get(role, {}).values())]  # 1-5 model checkers
     rows, recounted = [], 0
     for n, k in key.items():
         recs, checks, sims = files[k["path"]]
@@ -675,8 +829,9 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
     fair = [r for r in rows if (r["dataset"], r["id"]) in complete]
     translators = sorted({r["translator"] for r in rows})
     mean = lambda xs: sum(xs) / len(xs) if xs else None
-    meaning_of = lambda role: lambda r: (r["chk"][role] or {}).get("meaning_expected")
+    meaning_of = lambda role: lambda r: quality(r["chk"][role])
     fluency_of = lambda role: lambda r: (r["chk"][role] or {}).get("fluency")
+    signal_name = lambda role: f"{role} meaning (expected)" if role in rated else f"{role} quality"
     lines = ["# Translator comparison", "",
              f"Graded by hand: {len(graded)} of {len(rows)} translations for meaning, {len(fluent)} for fluency "
              f"(1-5). Translators are compared on the {len(complete)} prompts whose translations are all graded for "
@@ -701,19 +856,19 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
               "Mean of the checker's meaning score minus the user's grade (+ = more lenient than the user), and the "
               "share of translations it calls bound to English. A checker that favours its own family leans further "
               "up on that family's translations.", "",
-              "| translator | " + " | ".join(f"{role}: meaning − user | {role}: English-only" for role in roles) + " |",
-              "|---|" + "---:|---:|" * len(roles)]
+              "| translator | " + " | ".join(f"{role}: meaning − user | {role}: English-only" for role in rated) + " |",
+              "|---|" + "---:|---:|" * len(rated)]
     for t in translators:
         g, a = [r for r in graded if r["translator"] == t], [r for r in rows if r["translator"] == t]
         cells = [f"{fmt(mean([meaning_of(role)(r) - r['meaning'] for r in g if meaning_of(role)(r) is not None]), '+.2f')}"
-                 f" | {report.share(a, lambda r: bool((r['chk'][role] or {}).get('english_only')))}" for role in roles]
+                 f" | {report.share(a, lambda r: bool((r['chk'][role] or {}).get('english_only')))}" for role in rated]
         lines.append(f"| {t} | " + " | ".join(cells) + " |")
     lines += ["", "## Automatic signals vs the grades", "",
               "Spearman: rank correlation with the user's grade. AUC: how often a good translation (grade ≥ 4) "
               "scores above a bad one (≤ 3).", "", "| signal | vs | rows | Spearman | AUC good > bad |",
               "|---|---|---:|---:|---:|"]
-    signals = [s for role in roles for s in ((f"{role} meaning (expected)", "meaning", meaning_of(role)),
-                                              (f"{role} fluency", "fluency", fluency_of(role)))]
+    signals = [(signal_name(role), "meaning", meaning_of(role)) for role in roles]
+    signals += [(f"{role} fluency", "fluency", fluency_of(role)) for role in rated]
     for name, vs, f in signals + [("embedding similarity", "meaning", lambda r: r["sim"])]:
         pts = [(f(r), r[vs]) for r in (graded if vs == "meaning" else fluent) if f(r) is not None]
         good, low = [s for s, g in pts if g >= 4], [s for s, g in pts if g <= 3]
@@ -722,12 +877,18 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
                      f"{fmt(report.auc(good, low) if good and low else None)} |")
     lines += ["", "## Thresholds", "", "Share of bad translations rejected and of good ones kept at each threshold.",
               "", "| signal | threshold | bad rejected | good kept |", "|---|---:|---:|---:|"]
-    grids = [(f"{role} meaning (expected)", meaning_of(role), (3.0, 3.5, 4.0, 4.5, 4.8)) for role in roles]
+    grids = [(signal_name(role), meaning_of(role), (3.0, 3.5, 4.0, 4.5, 4.8) if role in rated else None)
+             for role in roles]
     for name, f, grid in grids + [("embedding similarity", lambda r: r["sim"], (0.6, 0.7, 0.8, 0.9))]:
         pts = [(f(r), r["meaning"]) for r in graded if f(r) is not None]
         good, low = [s for s, m in pts if m >= 4], [s for s, m in pts if m <= 3]
-        for t in grid:
-            lines.append(f"| {name} | {t} | {fmt(mean([s < t for s in low]), '.0%')} | "
+        labels = [str(t) for t in grid or ()]
+        if grid is None:  # a metric's own scale: the scores that keep 98% ... 85% of the good translations
+            grid = sorted({sorted(good)[int((1 - keep) * len(good))] for keep in (0.98, 0.95, 0.93, 0.9, 0.85)}
+                          if good else set())
+            labels = [fmt(t, ".3f") for t in grid]
+        for t, label in zip(grid, labels):
+            lines.append(f"| {name} | {label} | {fmt(mean([s < t for s in low]), '.0%')} | "
                          f"{fmt(mean([s >= t for s in good]), '.0%')} |")
     flags = Counter(f for r in rows for f in r["flags"])
     lines += ["", "## Rule flags", "", "| flag | translations | mean user meaning of the flagged |", "|---|---:|---:|"]
@@ -750,5 +911,181 @@ def compare_report(xlsx, out="reports/translate_compare.md"):
     Path(out).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"[compare] report -> {out}")
     return rows
+
+
+# ---------------------------------------------------------------- checker comparison
+
+def gate_candidate(rec, judge_check):
+    """Whether a gate would act on a translation: no rule flag, checked by the judge and not bound to English."""
+    return not rec["rule_flags"] and bool(judge_check) and not judge_check["english_only"]
+
+
+def checker_sample(cfg, per_set, out_dir, seed=0):
+    """A seeded stratified sample of `per_set` translations per Thai set that a gate would act on (`gate_candidate`),
+    copied with the judge's checks to <out_dir>/<set>.jsonl and <set>.check.jsonl. The candidate checkers score these
+    instead of every translation, which saves GPU time."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for ds in (n for n in cfg["datasets"] if data.translate_source(cfg, n)):
+        path = TRANSLATE_DIR / f"{ds}.jsonl"
+        if not path.exists():
+            continue
+        checks = by_id(check_path(path, "judge"))
+        recs = [r for r in report.iter_jsonl(path) if gate_candidate(r, checks.get(r["id"]))]
+        picked = data.sample(recs, per_set, seed)
+        report.write_jsonl(out_dir / f"{ds}.jsonl", picked)
+        report.write_jsonl(out_dir / f"{ds}.check.jsonl", [checks[r["id"]] for r in picked])
+        print(f"[checkers] {ds}: {len(picked)} of {len(recs)} translations sampled into {out_dir}")
+
+
+def checker_pick(cfg, out_dir, roles, per_group=15, random_n=20, seed=0, src_dir=None):
+    """The checker comparison's grading pool, from the translations in `src_dir` (<set>.jsonl with the checks next to
+    them; default data/translate, or the sample `checker_sample` wrote).
+    - The universe: translations a gate would act on (`gate_candidate`), scored by every candidate (a candidate with
+      no checks at all, e.g. a model that failed to load, is left out).
+    - The judge rejects a translation under translate.min_meaning. Each candidate rejects its lowest-scored
+      translations, as many as the judge rejects (fewer if scores tie at the threshold), so the gates are comparable;
+      its threshold is the first score kept, and as a gate it rejects the scores below it.
+    - Seeded draws: `per_group` from each "only <candidate> rejects" group, `per_group` from "only judge rejects", and
+      `random_n` from "all pass", the baseline. A row already drawn counts for every group it belongs to.
+    The records go to <out_dir>/<set>.jsonl (for `compare_sheet`), and the groups, thresholds and why each row was drawn
+    to <out_dir>/picks.json, which the sheet does not show."""
+    tc, out_dir, src_dir = cfg["translate"], Path(out_dir), Path(src_dir or TRANSLATE_DIR)
+    recs, found, sets = {}, {}, []
+    for ds in (n for n in cfg["datasets"] if data.translate_source(cfg, n)):
+        path = src_dir / f"{ds}.jsonl"
+        if not path.exists():
+            continue
+        sets.append(ds)
+        checks = {role: by_id(check_path(path, role)) for role in ("judge", *roles)}
+        for rec in report.iter_jsonl(path):
+            if gate_candidate(rec, checks["judge"].get(rec["id"])):
+                recs[(ds, rec["id"])] = rec
+                found[(ds, rec["id"])] = {role: c[rec["id"]] for role, c in checks.items() if rec["id"] in c}
+    missing = [role for role in roles if not any(role in f for f in found.values())]
+    roles = [role for role in roles if role not in missing]
+    universe = sorted(k for k, f in found.items() if all(role in f for role in roles))
+    judge_rejects = {k for k in universe if quality(found[k]["judge"]) < tc["min_meaning"]}
+    n, rejects, thresholds = len(judge_rejects), {}, {}
+    for role in roles:  # rejected as a gate would: under the threshold, so ties at it are kept
+        ranked = sorted(universe, key=lambda k: (quality(found[k][role]), k))
+        t = thresholds[role] = quality(found[ranked[n]][role]) if n < len(ranked) else None
+        rejects[role] = {k for k in ranked[:n] if t is None or quality(found[k][role]) < t}
+    any_rejects = set().union(*rejects.values())
+    groups = {f"only {role} rejects": rejects[role] - judge_rejects for role in roles}
+    groups |= {"only judge rejects": judge_rejects - any_rejects, "all pass": set(universe) - judge_rejects - any_rejects}
+    rng, picked = random.Random(seed), set()
+    for name, members in groups.items():
+        need = (random_n if name == "all pass" else per_group) - len(members & picked)
+        pool = sorted(members - picked)
+        picked |= set(rng.sample(pool, max(0, min(need, len(pool)))))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for ds in sets:
+        report.write_jsonl(out_dir / f"{ds}.jsonl", [recs[k] for k in sorted(picked) if k[0] == ds])
+    summary = {"universe": len(universe), "min_meaning": tc["min_meaning"], "judge_rejects": n,
+               "share": round(n / len(universe), 4) if universe else None, "thresholds": thresholds,
+               "missing": missing, "sizes": {name: len(m) for name, m in groups.items()},
+               "rejects": {role: len(rejects[role]) for role in roles},
+               "overlap": {role: len(rejects[role] & judge_rejects) for role in roles},
+               "english_only": {role: sum(bool(found[k][role].get("english_only")) for k in universe) for role in roles
+                                if any("english_only" in found[k][role] for k in universe)},
+               "rows": {f"{ds}/{rid}": {"groups": [name for name, m in groups.items() if (ds, rid) in m],
+                                         "quality": {role: quality(found[(ds, rid)][role]) for role in ("judge", *roles)}}
+                        for ds, rid in sorted(picked)}}
+    (out_dir / "picks.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print(f"[checkers] {len(picked)} of {len(universe)} translations picked into {out_dir}; the judge rejects {n}; "
+          f"groups {summary['sizes']}" + (f"; no checks from {', '.join(missing)}" if missing else ""))
+    return summary
+
+
+def wilson(k, n, z=1.96):
+    """95% Wilson interval of a share k / n, or (None, None) for no rows."""
+    if not n:
+        return None, None
+    p, d = k / n, 1 + z * z / n
+    centre, half = (p + z * z / (2 * n)) / d, z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def fisher_greater(a, b, c, d):
+    """One-sided Fisher exact p for [[a, b], [c, d]] (rows: groups; columns: bad, good): the chance of `a` or more bad
+    in the first row if both rows had the same bad rate."""
+    n1, bad, total = a + b, a + c, a + b + c + d
+    return sum(math.comb(bad, x) * math.comb(total - bad, n1 - x)
+               for x in range(a, min(bad, n1) + 1)) / math.comb(total, n1)
+
+
+def checker_report(xlsx, out="reports/checker_compare.md", picks=None):
+    """Read the user's grades of the checker pool and write the report: for each group, the share graded bad (meaning
+    ≤ 3) with its 95% interval and the mean grades, and a one-sided Fisher test of each disagreement group against
+    "all pass".
+    Decision rule: a candidate becomes a second gate if at least half of the graded translations only it rejects are
+    bad, and that share beats the baseline (p < 0.05); of several, the larger share wins. Otherwise the judge stays
+    the only checker."""
+    key = {int(k): v for k, v in json.loads(Path(f"{str(xlsx).removesuffix('.xlsx')}_key.json")
+                                          .read_text(encoding="utf-8")).items()}
+    grades, unreadable = read_grades(xlsx)
+    picks = json.loads(Path(picks or Path(next(iter(key.values()))["path"]).parent / "picks.json")
+                       .read_text(encoding="utf-8"))
+    graded = {f"{k['dataset']}/{k['id']}": grades[n] for n, k in key.items() if grades.get(n, (None,))[0] is not None}
+    mean = lambda xs: sum(xs) / len(xs) if xs else None
+    stats = {}
+    for name in picks["sizes"]:
+        g = [graded[k] for k, v in picks["rows"].items() if name in v["groups"] and k in graded]
+        stats[name] = (sum(m <= 3 for m, _, _ in g), len(g), mean([m for m, _, _ in g]),
+                       mean([f for _, f, _ in g if f is not None]))
+    base_bad, base_n = stats["all pass"][:2]
+    lines = ["# Checker comparison", "",
+             f"The universe is {picks['universe']} of the translator's translations with no rule flag that the judge "
+             f"does not call bound to English. The judge rejects {picks['judge_rejects']} ({fmt(picks['share'], '.1%')}) "
+             f"under meaning {picks['min_meaning']}; each candidate rejects as many, its lowest-scored (fewer when "
+             "scores tie at its threshold). Bad = meaning ≤ 3.",
+             ""]
+    if picks["missing"]:
+        lines += [f"No checks from {', '.join(picks['missing'])}: left out.", ""]
+    if unreadable:
+        lines += ["Unreadable grades, left out: " + ", ".join(f"row {n} {c} {v!r}" for n, c, v in unreadable) + ".", ""]
+    lines += ["## Candidates", "", "| candidate | threshold (quality) | rejects | also rejected by the judge | "
+              "English-only calls |", "|---|---:|---:|---:|---:|"]
+    for role, t in picks["thresholds"].items():
+        lines.append(f"| {role} | {fmt(t, '.3f')} | {picks['rejects'][role]} | {picks['overlap'][role]} | "
+                     f"{picks['english_only'].get(role, '—')} |")
+    lines += ["", "## Groups", "", "| group | in the universe | graded | bad | share bad (95% interval) | mean meaning "
+              "| mean fluency | vs all pass (Fisher p) |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    pvals = {}
+    for name, (bad, n, m, f) in stats.items():
+        lo, hi = wilson(bad, n)
+        if name != "all pass" and n and base_n:
+            pvals[name] = fisher_greater(bad, n - bad, base_bad, base_n - base_bad)
+        share = f"{fmt(bad / n if n else None, '.0%')} ({fmt(lo, '.0%')}–{fmt(hi, '.0%')})"
+        lines.append(f"| {name} | {picks['sizes'][name]} | {n} | {bad} | {share} | {fmt(m)} | {fmt(f)} | "
+                     f"{fmt(pvals.get(name), '.3f')} |")
+    alone = {role: stats[f"only {role} rejects"][:2] for role in picks["thresholds"]}
+    qualified = sorted(((bad / n, role) for role, (bad, n) in alone.items()
+                        if n and bad / n >= 0.5 and pvals.get(f"only {role} rejects", 1) < 0.05), reverse=True)
+    lines += ["", "## Decision", ""]
+    if qualified:
+        role = qualified[0][1]
+        lines.append(f"Add `{role}` as a second gate: `translate.gates: [{{role: {role}, min_quality: "
+                     f"{picks['thresholds'][role]}}}]`. It scored only a sample, so first `distill check-translation "
+                     f"--role {role} data/translate/*_th.jsonl` (a translation it has not scored fails the gate), then "
+                     "`distill build-translated --dataset <set>` for each Thai set. The judge stays the checker.")
+    else:
+        lines.append("No candidate qualifies: the judge stays the only checker.")
+    judge_bad, judge_n = stats["only judge rejects"][:2]
+    if judge_n and judge_bad / judge_n < 0.5:
+        lines += ["", "Most translations only the judge rejects were graded good: the judge rejects good translations "
+                      "too. Taking them back would reshuffle the seeded sample, so that is a follow-up."]
+    notes = [(n, k, grades[n]) for n, k in key.items() if n in grades and grades[n][2]]
+    if notes:
+        lines += ["", "## Grader notes", "", "| row | groups | meaning | note |", "|---:|---|---:|---|"]
+    for n, k, (meaning, _, note) in notes:
+        groups = picks["rows"].get(f"{k['dataset']}/{k['id']}", {}).get("groups", [])
+        lines.append(f"| {n} | {', '.join(groups)} | {'—' if meaning is None else meaning} | "
+                     f"{str(note).replace('|', '/')} |")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"[checkers] report -> {out}")
+    return stats
 
 

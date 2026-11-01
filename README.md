@@ -18,13 +18,14 @@ distill/verify.py     rule checks for closed-ended prompts
 distill/judge.py      rubric scores 1-9 for rationale + answer; validation against human preferences
 distill/selection.py  best-of-N / distinct correct samples, curriculum order
 distill/report.py     filter (heuristic rejections) and analyze (Markdown report)
-distill/translate.py  Thai sets: translate new questions, check them (rules, judge, embeddings), build the prepared
-                      file; the translator comparison's grading sheet and report
+distill/translate.py  Thai sets: translate new questions, check them (rules, judge, metrics, embeddings), build the
+                      prepared file; the translator and checker comparisons' grading sheets and reports
 distill/cli.py        command line
 config.yaml           every setting: models, servers, sampling, thresholds, datasets
 prompts/              versioned templates: {name}_{version}.txt
 scripts/              pipeline.sh (+ lib.sh), run_pilot.sh / run_full.sh / bench.sh / vm_check.sh / collect.sh (GPU VM),
-                      translate_compare.sh / translate_compare2.sh / second_checker.sh / run_thai.sh (Thai, GPU VM), smoke_openrouter.sh (laptop)
+                      translate_compare.sh / translate_compare2.sh / second_checker.sh / checker_compare.sh /
+                      run_thai.sh (Thai, GPU VM), smoke_openrouter.sh (laptop)
 ```
 
 ## Pipeline
@@ -379,11 +380,48 @@ models against Gemma.
   model loading once.
 - **Grading:** the judge checks the new translations, and a 160-row sheet goes to `reports/translate_compare2.xlsx`.
   `compare-report` reads it as before.
+- **Outcome:** the user chose Gemma without grading the sheet. Gemma kept unmarked code that the sentence-level models
+  mangled, and the three models were deleted from the VM.
 
 **A checker from another family** (~10 min of GPU, before the Thai run): `scripts/second_checker.sh` has the
 `checker` role score the same 156 translations. The report then puts each checker beside the hand grades, with its
 lean on each translator, which shows whether it favours its own family. If it agrees with the grades at least as
 well as Gemma, `translate.checker: checker` makes it check Gemma's translations in the Thai run.
+
+**Checker comparison** (~25 min of GPU, mostly model loads, `scripts/checker_compare.sh`): more checkers against the
+judge, as a possible second gate.
+- **Candidates:**
+  - `metricx`: MetricX-24 XXL. A translation-quality metric (QE, no reference translation): an error score from 0 to
+    25.
+  - `cometkiwi`: CometKiwi XL, a score from 0 to 1. It is gated, so accept its terms on Hugging Face first. It runs
+    from `.venv-comet`, whose `unbabel-comet` pins its own numpy and torch:
+    `uv venv .venv-comet --python 3.12 && uv pip install --python .venv-comet -e . "unbabel-comet>=2.2"`.
+  - `typhoon25`: Typhoon 2.5 30B-A3B behind vLLM with the judge's check prompt. vLLM quantizes it to FP8 while
+    loading.
+- **How the metrics run:**
+  - The two metrics are `metric:` roles, run in-process. Each check stores `quality` (higher is better: MetricX's
+    error negated, CometKiwi's score), `raw`, `pieces` and `truncated`.
+  - A pair longer than the model's input is read as aligned paragraphs, or lines, and the worst piece decides
+    (`translate.aligned_pieces`).
+- **What gets scored:**
+  - The candidates score G1's 156 graded translations, and `compare-report` adds them to
+    `reports/translate_compare.md` with AUCs.
+  - Scoring all 5,850 of night 1's translations would take too long (the user's call), so they also score a seeded
+    sample (`distill checker-sample --per-set 300`, into `data/checker_compare/sample/`). The sample holds
+    translations a gate would act on: no rule flag, and not called English-only by the judge.
+- **The pool** (`distill checker-pick --from data/checker_compare/sample`):
+  - The judge rejects sampled translations under `min_meaning`, about 2.7%. Each candidate rejects as many, its
+    lowest-scored.
+  - About 80 rows are drawn: 15 that only a given candidate rejects, 15 that only the judge rejects, and 20 that all
+    pass. They go to `data/checker_compare/` and to the sheet `reports/checker_compare.xlsx`, one translation per row
+    and blind.
+- **Decision** (`distill checker-report reports/checker_compare.xlsx`):
+  - A candidate becomes a second gate if at least half of the rows only it rejects are graded bad (meaning ≤ 3), and
+    clearly more than the baseline (one-sided Fisher p < 0.05).
+  - Its threshold goes to `translate.gates`. It scored only the sample, so it then scores every translation in
+    `data/translate` (an unscored translation fails the gate), and `distill build-translated` runs for each Thai set.
+  - A row that fails a gate keeps its place, flagged `translation.gate_failed`. `select_rows` skips it after
+    sampling, and `select` drops its samples. Dropping it from the file would reshuffle the seeded sample.
 
 **Thai run:**
 ```bash
@@ -416,14 +454,19 @@ distill check-translation data/translate/no_robots_th.jsonl      # translate.che
 distill similarity data/translate/no_robots_th.jsonl             # manual only; no server up; -> .similarity.jsonl
 distill build-translated --dataset no_robots_th                  # -> data/prepared/no_robots_th.jsonl
 distill compare-sheet FILE... --out reports/translate_compare.xlsx
+distill check-translation --role metricx FILE...                 # in-process; .venv-comet/bin/distill for cometkiwi
+distill checker-sample --per-set 300 --out-dir data/checker_compare/sample
+distill checker-pick --roles metricx cometkiwi typhoon25 --from data/checker_compare/sample --out-dir data/checker_compare
+distill checker-report reports/checker_compare.xlsx              # -> reports/checker_compare.md
 ```
 
 **Translation record** (`data/translate/<set>.jsonl`): `id` (the English prompt's id), `dataset`, `source_dataset`,
 `input_en`, `input` (Thai), `finish_reason`, `reference_en`, `reference` (Thai, or null), `strata`, `closed`, `gold`
 (English), `hint_ok`, `translator` (`model`, `role`, `prompt_version`, `prompt_hash`, `sampling`), `tokens`,
 `rule_flags`. **Check:** `id`, `english_only`, `fluency`, `meaning`, `meaning_expected`, `critique`, `judge_model`,
-`check_prompt_hash`. **Similarity:** `id`, `similarity`, `embed_model`. The Thai prepared row adds `lang`,
-`input_en` and `translation` to the usual fields, and final rows carry them on.
+`check_prompt_hash`. **Metric check:** `id`, `quality`, `raw`, `pieces`, `truncated`, `judge_model`. **Similarity:**
+`id`, `similarity`, `embed_model`. The Thai prepared row adds `lang`, `input_en` and `translation` to the usual
+fields, and final rows carry them on.
 
 ## Output schemas (one JSON object per line)
 **Generated sample** (`generate`, then `compress` adds `rationale`, `cot_method`, `compress_model`, `compress_prompt_hash`):

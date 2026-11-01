@@ -108,6 +108,34 @@ checker:
       - --max-num-seqs=128
       - --port=8000
 
+# Other checkers for the checker comparison (scripts/checker_compare.sh), against the judge on the translations where
+# they disagree. typhoon25: SCB 10X's Thai-tuned Qwen3 MoE (30B, 3B active; Apache-2.0) with the judge's check prompt.
+# No FP8 or AWQ build is published, so vLLM quantizes the bf16 weights to FP8 while loading, layer by layer (~31 GiB;
+# Marlin kernels on the A100, which has no FP8 hardware).
+typhoon25:
+  vllm:
+    model: typhoon-ai/typhoon2.5-qwen3-30b-a3b
+    api_base: http://localhost:8000/v1
+    concurrency: 64
+    min_gpu_gib: 36                      # FP8 weights ~31 GiB + overhead + a small KV cache; checks are short
+    timeout_s: 1800
+    startup_timeout_s: 1800
+    logprobs: true
+    serve_env: {VLLM_USE_FLASHINFER_SAMPLER: 0}
+    serve_args:
+      - --quantization=fp8_per_tensor
+      - --max-model-len=16384
+      - --gpu-memory-utilization=0.92
+      - --max-num-seqs=64
+      - --port=8000
+# Translation-quality metrics (QE: no reference translation), in-process (`metric:`). A pair longer than max_tokens is
+# read in aligned paragraph or line pieces, and the worst piece decides (translate.aligned_pieces).
+metricx:    # Apache-2.0; mT5-XXL regression on WMT human ratings: an error score 0-25, lower is better
+  metric: {kind: metricx, model: google/metricx-24-hybrid-xxl-v2p6-bfloat16, tokenizer: google/mt5-xl,
+           dtype: bfloat16, max_tokens: 1536, batch_size: 8}
+cometkiwi:  # CC BY-NC-SA 4.0, gated; XLM-R XL; 0-1, higher is better. Runs from .venv-comet (unbabel-comet's pins)
+  metric: {kind: comet, model: Unbabel/wmt23-cometkiwi-da-xl, max_tokens: 512, batch_size: 16}
+
 # Sentence-level translators for the second translator comparison (scripts/translate_compare2.sh). They are not chat
 # models, so they run in-process with transformers (`hf:`), not behind vLLM. A prompt is split into lines and
 # sentences of at most max_chars, translated, and put back together (translate.split_for_mt). Licenses for our use:
@@ -187,6 +215,9 @@ translate:
   compare_limit: 13        # prompts per Thai set in the comparison: 4 sets, ~50 prompts, 3 translators
   embed_model: BAAI/bge-m3 # `similarity` (manual only): cosine of the English and Thai prompt (extra `qe`)
   min_meaning: 4.0         # the checker's expected meaning score (1-5) a translation needs
+  # Second checkers adopted after night 1 (checker_compare.sh), e.g. [{role: metricx, min_quality: -4.2}]: a translation
+  # scoring under min_quality is flagged, not dropped, so the seeded samples stay those of earlier runs.
+  gates: []
   min_similarity: null     # not applied: similarity did not tell good translations from bad ones
   # Rule checks on every translation (translate.rule_flags). The length ratio is Thai / English characters. A Thai
   # share of 0.2 still catches untranslated copies (0.0) but keeps prompts heavy with code or names (0.35-0.48).

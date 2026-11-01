@@ -424,6 +424,198 @@ def test_compare_report_puts_a_second_checker_beside_the_judge(tmp_path):
     assert "| checker meaning (expected) | meaning | 6 |" in text and "| checker meaning (expected) | 4.0 |" in text
 
 
+def test_compare_report_reads_a_metric_checker_on_its_own_scale(tmp_path):
+    from openpyxl import load_workbook
+    paths = comparison_files(tmp_path)
+    for path in paths:
+        q = {"teacher": -0.5, "judge": -1.0, "typhoon": -9.0}[path.name.split(".")[1]]
+        report.write_jsonl(translate.check_path(path, "metricx"), [
+            {"id": f"q{i}", "quality": q, "raw": -q, "pieces": 1, "truncated": False, "judge_model": "model-metricx"}
+            for i in range(2)])
+    out = tmp_path / "compare.xlsx"
+    key = translate.compare_sheet(paths, out)
+    wb = load_workbook(out)
+    for row in wb["grades"].iter_rows(min_row=2):
+        row[4].value = row[5].value = {"teacher": 5, "judge": 4, "typhoon": 2}[key[row[0].value]["translator"]]
+    wb.save(out)
+    translate.compare_report(out, tmp_path / "report.md")
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "`metricx` (model-metricx)" in text and "| metricx quality | meaning | 6 | 1.00 | 1.00 |" in text
+    assert "metricx fluency" not in text and "metricx: meaning" not in text  # no 1-5 scale: no fluency, no lean
+    assert "| metricx quality | -1.000 | 100% | 100% |" in text  # the score that keeps the good translations
+
+
+# ---------------------------------------------------------------- metric checkers
+
+def test_aligned_pieces_split_long_pairs_by_paragraph_then_line():
+    fits = lambda en, th: len(en) + len(th) <= 40
+    assert translate.aligned_pieces("short", "สั้น", fits) == ([("short", "สั้น")], False)
+    en = "aaaaaaaa\n\nbbbbbbbb\n\ncccccccccc\ndddddddddd"
+    th = "กกกกกกกก\n\nขขขขขขขข\n\nคคคคคคคคคค\nงงงงงงงงงง"
+    assert translate.aligned_pieces(en, th, fits) == ([("aaaaaaaa\n\nbbbbbbbb", "กกกกกกกก\n\nขขขขขขขข"),
+                                                       ("cccccccccc", "คคคคคคคคคค"), ("dddddddddd", "งงงงงงงงงง")], False)
+    en, th = "x" * 30 + "\n\n" + "y" * 30, "ก" * 50  # the translation merged the paragraphs: no alignment
+    assert translate.aligned_pieces(en, th, fits) == ([(en, th)], True)
+    assert translate.metricx_text("Hi", "สวัสดี") == "source: Hi candidate: สวัสดี"
+
+
+@pytest.fixture
+def fake_metric(monkeypatch):
+    """A stand-in for loading a metric model: the raw score is the Thai piece's length; English up to 20 chars fits."""
+    loads = []
+
+    def load(m):
+        loads.append(m["model"])
+        return (lambda pairs: [float(len(th)) for _, th in pairs]), (lambda en, th: len(en) <= 20)
+    translate.metric_engine.cache_clear()
+    monkeypatch.setattr(translate, "load_metric", load)
+    yield loads
+    translate.metric_engine.cache_clear()
+
+
+def test_metric_check_scores_the_worst_piece_and_resumes(fake_metric, tmp_path):
+    src = tmp_path / "t.jsonl"
+    report.write_jsonl(src, [{"id": "a", "input_en": "Hi?", "input": "สวัสดี?"},
+                             {"id": "b", "input_en": "First paragraph.\n\nSecond one here.",
+                              "input": "ย่อหน้าแรก\n\nย่อหน้าที่สองยาวกว่า"},
+                             {"id": "c", "input_en": "Bye?", "input": ""}])  # an empty translation is not scored
+    translate.check(CFG, src, role="metricx")
+    out = {r["id"]: r for r in report.read_jsonl(tmp_path / "t.check_metricx.jsonl")}
+    model = CFG["metricx"]["metric"]["model"]
+    assert out["a"] == {"id": "a", "quality": -7.0, "raw": 7.0, "pieces": 1, "truncated": False, "judge_model": model}
+    assert sorted(out) == ["a", "b"] and out["b"]["pieces"] == 2
+    assert out["b"]["raw"] == len("ย่อหน้าที่สองยาวกว่า")  # MetricX: the larger error of the two pieces decides
+    translate.check(CFG, src, role="metricx")
+    assert len(report.read_jsonl(tmp_path / "t.check_metricx.jsonl")) == 2 and fake_metric == [model]
+    translate.check(CFG, src, role="cometkiwi")
+    kiwi = {r["id"]: r for r in report.read_jsonl(tmp_path / "t.check_cometkiwi.jsonl")}
+    assert kiwi["b"]["quality"] == kiwi["b"]["raw"] == len("ย่อหน้าแรก")  # CometKiwi: higher is better, the lower decides
+
+
+# ---------------------------------------------------------------- checker comparison
+
+def checker_universe(tmp_path, monkeypatch):
+    """60 translations of no_robots_th. Left out of the universe: p0 (rule flag), p1 (English-only), p2 (no MetricX
+    score). The judge rejects p3-p10; MetricX's lowest are p3-p5 and p20-p24; Typhoon's are p3, p20 and p30-p35."""
+    monkeypatch.setattr(translate, "TRANSLATE_DIR", tmp_path / "translate")
+    (tmp_path / "translate").mkdir()
+    path = tmp_path / "translate" / "no_robots_th.jsonl"
+    ids = [f"p{i}" for i in range(60)]
+    report.write_jsonl(path, [{"id": i, "dataset": "no_robots_th", "source_dataset": "no_robots", "strata": None,
+                               "input_en": f"Prompt {i}", "input": f"คำแปล {i}", "translator": {"role": "judge",
+                               "model": "gemma"}, "rule_flags": ["not_thai"] if i == "p0" else []} for i in ids])
+    num = lambda i: int(i[1:])
+    report.write_jsonl(translate.check_path(path, "judge"), [
+        {"id": i, "english_only": i == "p1", "fluency": 5, "meaning": 5,
+         "meaning_expected": 3.0 if 3 <= num(i) <= 10 else 4.8} for i in ids])
+    low = {3: -9, 4: -8, 5: -7, 20: -6, 21: -6, 22: -5, 23: -5, 24: -4}
+    report.write_jsonl(translate.check_path(path, "metricx"), [
+        {"id": i, "quality": low.get(num(i), -1.0)} for i in ids if i != "p2"])
+    weak = {3: 1.0, 20: 1.5, **{n: 2.0 for n in range(30, 36)}}
+    report.write_jsonl(translate.check_path(path, "typhoon25"), [
+        {"id": i, "english_only": i == "p40", "fluency": 5, "meaning": 5, "meaning_expected": weak.get(num(i), 4.9)}
+        for i in ids])
+
+
+def test_checker_pick_draws_each_disagreement_group(tmp_path, monkeypatch):
+    checker_universe(tmp_path, monkeypatch)
+    picks = translate.checker_pick(CFG, tmp_path / "pool", ["metricx", "typhoon25", "cometkiwi"], per_group=5,
+                                   random_n=6)
+    assert (picks["universe"], picks["judge_rejects"], picks["missing"]) == (57, 8, ["cometkiwi"])
+    assert picks["sizes"] == {"only metricx rejects": 5, "only typhoon25 rejects": 7, "only judge rejects": 5,
+                              "all pass": 38}
+    assert picks["thresholds"] == {"metricx": -1.0, "typhoon25": 4.9} and picks["overlap"] == {"metricx": 3,
+                                                                                               "typhoon25": 1}
+    assert picks["english_only"] == {"typhoon25": 1} and picks["rejects"] == {"metricx": 8, "typhoon25": 8}
+    rows = picks["rows"]
+    assert len(rows) == 20  # 5 + 4 more for Typhoon (p20 is in both) + 5 + 6
+    assert rows["no_robots_th/p20"]["groups"] == ["only metricx rejects", "only typhoon25 rejects"]
+    assert sum("only typhoon25 rejects" in r["groups"] for r in rows.values()) == 5
+    written = report.read_jsonl(tmp_path / "pool" / "no_robots_th.jsonl")
+    assert sorted(f"no_robots_th/{r['id']}" for r in written) == sorted(rows)
+    again = translate.checker_pick(CFG, tmp_path / "again", ["metricx", "typhoon25"], per_group=5, random_n=6)
+    assert again["rows"] == rows  # seeded
+
+
+def test_checker_sample_takes_gate_candidates_with_the_judges_checks(tmp_path, monkeypatch):
+    checker_universe(tmp_path, monkeypatch)
+    translate.checker_sample(CFG, 10, tmp_path / "sample")
+    picked = report.read_jsonl(tmp_path / "sample" / "no_robots_th.jsonl")
+    ids = [r["id"] for r in picked]
+    assert len(ids) == 10 and not {"p0", "p1"} & set(ids)  # no rule flag, not English-only
+    assert [c["id"] for c in report.read_jsonl(tmp_path / "sample" / "no_robots_th.check.jsonl")] == ids
+    translate.checker_sample(CFG, 10, tmp_path / "again")
+    assert [r["id"] for r in report.read_jsonl(tmp_path / "again" / "no_robots_th.jsonl")] == ids  # seeded
+    report.write_jsonl(tmp_path / "sample" / "no_robots_th.check_metricx.jsonl", [{"id": i, "quality": -1.0} for i in ids])
+    picks = translate.checker_pick(CFG, tmp_path / "pool", ["metricx"], src_dir=tmp_path / "sample")
+    assert picks["universe"] == 10  # the sample, not data/translate
+
+
+def test_checker_report_applies_the_decision_rule(tmp_path, monkeypatch):
+    from openpyxl import load_workbook
+    checker_universe(tmp_path, monkeypatch)
+    picks = translate.checker_pick(CFG, tmp_path / "pool", ["metricx", "typhoon25"], per_group=5, random_n=6)
+    out = tmp_path / "checkers.xlsx"
+    key = translate.compare_sheet([tmp_path / "pool" / "no_robots_th.jsonl"], out)
+    wb = load_workbook(out)
+    for row in wb["grades"].iter_rows(min_row=2):
+        groups = picks["rows"][f"no_robots_th/{key[row[0].value]['id']}"]["groups"]
+        row[4].value = row[5].value = 2 if "only metricx rejects" in groups else 5  # MetricX alone is right
+    wb["grades"].cell(row=2, column=7, value="a note")
+    wb.save(out)
+    stats = translate.checker_report(out, tmp_path / "report.md")
+    text = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert stats["only metricx rejects"][:2] == (5, 5) and stats["only typhoon25 rejects"][:2] == (1, 5)
+    assert "| metricx | -1.000 | 8 | 3 | — |" in text and "| typhoon25 | 4.900 | 8 | 1 | 1 |" in text
+    assert "| only metricx rejects | 5 | 5 | 5 | 100% (57%–100%) | 2.00 | 2.00 | 0.002 |" in text
+    assert "Add `metricx` as a second gate: `translate.gates: [{role: metricx, min_quality: -1.0}]`" in text
+    assert "Most translations only the judge rejects were graded good" in text and "a note" in text
+
+
+def test_fisher_and_wilson():
+    assert translate.fisher_greater(5, 0, 0, 6) == pytest.approx(1 / 462)
+    assert translate.fisher_greater(0, 5, 0, 6) == pytest.approx(1.0)
+    lo, hi = translate.wilson(5, 5)
+    assert lo == pytest.approx(0.5655, abs=1e-3) and hi == 1.0 and translate.wilson(0, 0) == (None, None)
+
+
+# ---------------------------------------------------------------- gates
+
+def test_a_gate_flags_rows_instead_of_dropping_them(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "PREPARED_DIR", tmp_path / "prepared")
+    cfg = copy.deepcopy(CFG)
+    cfg["translate"]["gates"] = [{"role": "metricx", "min_quality": -3.0}]
+    path = tmp_path / "no_robots_th.jsonl"
+    report.write_jsonl(path, [{"id": i, "source_dataset": "no_robots", "input_en": "Hi?", "input": "สวัสดี?",
+                               "rule_flags": [], "gold": [], "translator": {"model": "gemma"}} for i in "abc"])
+    ok = {"english_only": False, "fluency": 5, "meaning": 5, "meaning_expected": 4.9}
+    report.write_jsonl(translate.check_path(path, "judge"), [{**ok, "id": i} for i in "abc"])
+    report.write_jsonl(translate.check_path(path, "metricx"), [{"id": "a", "quality": -1.0}, {"id": "b", "quality": -5.0}])
+    stats = translate.build(cfg, "no_robots_th", path)
+    assert stats["kept"] == 3 and stats["gated: metricx"] == 2  # b scores too low; c has no score
+    rows = {r["id"]: r for r in report.read_jsonl(tmp_path / "prepared" / "no_robots_th.jsonl")}
+    assert "gate_failed" not in rows["a"]["translation"] and rows["b"]["translation"]["gate_failed"] == ["metricx"]
+    assert data.gated_ids(cfg, "no_robots_th") == {"b", "c"} and data.gated_ids(cfg, "no_robots") == set()
+
+
+def test_gated_rows_leave_after_the_sample_and_in_select(tmp_path, monkeypatch):
+    rows = [{"id": f"p{i}", "strata": f"s{i % 3}", "hint_ok": False, "closed": False,
+             "translation": {"gate_failed": ["metricx"]} if i % 4 == 0 else {}} for i in range(24)]
+    monkeypatch.setattr(data, "load_prompts", lambda cfg, name: rows)
+    expected = [r for r in data.sample(rows, 10, 0) if not r["translation"]]
+    assert data.select_rows(CFG, "no_robots_th", limit=10) == expected  # the same draw, less the gated rows
+    monkeypatch.setattr(data, "PREPARED_DIR", tmp_path)
+    report.write_jsonl(tmp_path / "no_robots_th.jsonl", rows)
+    monkeypatch.setattr(selection, "load_complexity", lambda ds: {})
+    samples = [gen_row(i, source_dataset="no_robots_th", rationale="1. A step.", answer="Ok.") for i in range(2)]
+    src = tmp_path / "s.kept.jsonl"
+    report.write_jsonl(src, samples)
+    report.write_jsonl(tmp_path / "s.kept.judge.jsonl", [{"id": f"p{i}", "sample_idx": 0, "score": 8} for i in range(2)])
+    stats = selection.run(CFG, src, tmp_path / "f.jsonl", count=len)
+    assert [r["id"] for r in report.read_jsonl(tmp_path / "f.jsonl")] == ["p1"]  # p0 failed the gate
+    assert stats["dropped: translation gate"] == 1
+
+
 def test_reply_json_falls_back_to_reasoning_content():
     choice = {"message": {"content": "", "reasoning_content": '{"english_only": false, "critique": "ok", '
                                                             '"fluency": 5, "meaning": 4}'}}

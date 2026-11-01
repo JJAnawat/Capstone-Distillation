@@ -195,9 +195,33 @@ Thai sets first run translate → check-translation → similarity → build-tra
           Seed-X 6× and 1,024, the others 2.5× and 512. The cut files are kept in `seedx_cut_v1/`.
         - After the rerun, 1 Seed-X translation is still cut: a prompt with unfenced JavaScript, which the
           English-only rule drops anyway.
-        - **Waiting for the user's grades:** the laptop has the sheet in `data/vm/translate_compare2/` (160 rows, 40
-          per translator, blind). Then `distill compare-report data/vm/translate_compare2/translate_compare2.xlsx
-          --out reports/translate_compare2.md`.
+        - **Outcome (the user's call, 2026-11-01): Gemma stays the translator, and the sheet wasn't graded.**
+          - On the pool's one prompt with unmarked code, Gemma kept all 25 code lines, where the others kept 8–9.
+          - Across night 1's 5,850 translations, Gemma split no Thai word with a space; MADLAD did, in 2 of 40.
+          - The sentence-level models see one sentence at a time, and `split_for_mt` protects only fenced code, so
+            unmarked code reached them as prose.
+          - NLLB, MADLAD and Seed-X are deleted from `~/hf`. Their code and `hf:` roles stay.
+    - **Checker comparison** (the user's call, 2026-11-01). The translator is settled; the worry is Gemma checking
+      its own work.
+      - **Candidates (the user's choice):**
+        - MetricX-24 XXL (`metricx`, Apache-2.0; a QE metric, mT5);
+        - CometKiwi XL (`cometkiwi`, CC BY-NC-SA, gated, run from `.venv-comet`);
+        - Typhoon 2.5 30B-A3B (`typhoon25`, Apache-2.0; a Thai-tuned Qwen3 MoE, quantized to FP8 by vLLM while
+          loading, since no FP8 or AWQ build is published).
+      - **Why a disagreement pool:** G1 has only 2 bad Gemma translations (meaning 3), too few to test a checker on
+        Gemma's real errors. On night 1 Gemma dropped 145 of 5,850 for meaning and 104 as English-only.
+      - **Pool:** each candidate rejects as many translations as Gemma does (about 2.7%). About 80 are drawn for
+        grading: 15 only a candidate rejects, 15 only Gemma rejects, 20 all pass.
+      - **Sample:** the candidates score a seeded sample of 300 per Thai set (1,200), not all 5,850; the user found
+        all of them too long to compute.
+      - **Decision rule:** a candidate becomes a **second gate** if at least half of the rows only it rejects are
+        bad and that beats "all pass" (Fisher p < 0.05). Gemma stays the checker either way.
+      - **A gate flags instead of dropping** (`translation.gate_failed`): a row deleted from the prepared file would
+        reshuffle the seeded sample, so LogiQA's 1,200 would lose night 1's 500. `select_rows` skips flagged rows
+        after sampling, and `select` drops their samples, night 1's included.
+      - **If a gate is adopted:** it scores all of `data/translate` first (~15 min of GPU; unscored counts as
+        failed), then `build-translated` runs per set.
+      - **Night 2 waits for this decision** (the user's choice).
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
@@ -210,8 +234,8 @@ Thai sets first run translate → check-translation → similarity → build-tra
 - Laptop: `uv venv --python 3.12 && uv pip install -e ".[dev]"`, then `uv run pytest`.
 - Laptop smoke test (Git Bash; needs `OPENROUTER_API_KEY` in `.env`; costs cents): `bash scripts/smoke_openrouter.sh`.
 - Thai sets on the VM (README "Thai sets"):
-  - `scripts/translate_compare.sh` (the translator comparison) and `scripts/second_checker.sh` (the other-family
-    checker);
+  - `scripts/translate_compare.sh` (the translator comparison), `scripts/second_checker.sh` (the other-family
+    checker) and `scripts/checker_compare.sh` (the checker comparison);
   - then `LIMIT=N bash scripts/run_thai.sh`: prep once, then distill N prompts per set. A larger N on the next
     night continues, and N=0 takes the rest.
 - VM: the README's "VM sessions" section. Session 1: `vm_check.sh`, install, download, a `LIMIT=5` smoke run.
@@ -378,13 +402,15 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
          - The redo will compress 715 English-step records again (211 / 311 / 166 / 27), which takes a few minutes.
        - The copied `Final answer:` line stays in the rationales. It's in 91% of Thai and 74% of English LogiQA
          rationales; the user left it for the training stage.
-  3. **First the second translator comparison** (Key decisions):
-     - `bash scripts/translate_compare2.sh` (~20 min of GPU);
-     - the user grades `reports/translate_compare2.xlsx` (160 rows);
-     - `compare-report … --out reports/translate_compare2.md`;
+  3. **The second translator comparison ran; Gemma stays** (Key decisions).
+  4. **First the checker comparison** (Key decisions):
+     - **Before deploying:** the user accepts CometKiwi XL's terms on Hugging Face with the account behind the VM's
+       token, which also needs read access to public gated repos.
+     - `bash scripts/checker_compare.sh` (~25 min of GPU);
+     - the user grades `reports/checker_compare.xlsx` (~80 rows);
+     - `distill checker-report reports/checker_compare.xlsx --out reports/checker_compare.md`;
      - decide, then delete the losing models from `~/hf`.
-     If a rival wins, a follow-up plan re-translates the undistilled questions before night 2.
-  4. **G2, night 2 (about 4.4 h):** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh`.
+  5. **G2, night 2 (about 4.4 h):** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh`.
      - It takes every remaining open prompt (No Robots 775, HelpSteer2 792, UltraFeedback 652) and 700 more LogiQA,
        plus the redo.
      - The estimate uses night 1's rates (open 4.2–4.6 s per prompt, LogiQA 7.2 s) plus about 20 min for model

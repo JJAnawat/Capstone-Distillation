@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from distill import verify
-from distill.data import exact_gold, load_complexity
+from distill.data import exact_gold, gated_ids, load_complexity
 from distill.report import STUDENT_TEMPLATE_TOKENS, iter_jsonl, judge_path, student_counter, write_jsonl
 
 
@@ -86,7 +86,11 @@ def run(cfg, in_path, out, order=None, min_score=None, count=None):
             "grams": trigrams(r.get("rationale") or "")})
 
     winners, stats, exact = {}, Counter(), exact_gold(cfg)
-    for group in groups.values():
+    gated = {ds: gated_ids(cfg, ds) for ds in {g[0]["dataset"] for g in groups.values()}}
+    for rid, group in groups.items():
+        if rid in gated[group[0]["dataset"]]:
+            stats["dropped: translation gate"] += 1  # a gate adopted after these samples were made
+            continue
         passing = [c for c in group if c["correct"]]
         if not passing and group[0]["closed"] and group[0]["dataset"] in exact:
             stats["dropped: no correct answer"] += 1  # an exact gold: the judge would only pick among wrong answers

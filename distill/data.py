@@ -197,7 +197,9 @@ def by_complexity(table, level, default):
 
 def select_rows(cfg, dataset, mode="open", only=None, limit=None, seed=0, exclude=frozenset()):
     """The prompts a stage works on: hint-eligible ones in hint mode, optionally only closed or open ones, without the
-    ids in `exclude`, then a seeded stratified sample. rate and generate get the same subset from the same arguments."""
+    ids in `exclude`, then a seeded stratified sample. rate and generate get the same subset from the same arguments.
+    Translations that failed a gate are left out after the sample, so the sample itself stays the one earlier runs
+    drew (see `translate.build`)."""
     rows = [r for r in load_prompts(cfg, dataset) if r["id"] not in exclude]
     if mode == "hint":
         rows = [r for r in rows if r["hint_ok"]]
@@ -205,7 +207,14 @@ def select_rows(cfg, dataset, mode="open", only=None, limit=None, seed=0, exclud
         rows = [r for r in rows if bool(r.get("closed")) == (only == "closed")]
     if limit:
         rows = sample(rows, limit, seed)
-    return rows
+    return [r for r in rows if not (r.get("translation") or {}).get("gate_failed")]
+
+
+def gated_ids(cfg, name):
+    """Ids of a translated set's prompts that failed a gate (translate.gates); none for other datasets."""
+    if not translate_source(cfg, name) or not (PREPARED_DIR / f"{name}.jsonl").exists():
+        return set()
+    return {r["id"] for r in load_prompts(cfg, name) if (r.get("translation") or {}).get("gate_failed")}
 
 
 def sample(rows, limit, seed):
