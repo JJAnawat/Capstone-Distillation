@@ -260,8 +260,25 @@ Thai sets first run translate → check-translation → similarity → build-tra
           also Gemma's. Typhoon calls 6 more English-only.
         - 64 rows to grade: 20 all pass, 15 only Gemma rejects, 14 only MetricX, 13 only Typhoon, 2 both
           candidates. By set: UltraFeedback 23, No Robots 16, HelpSteer2 14, LogiQA 11.
-        - **Waiting for the user's grades.** Then, on the VM: `distill checker-report reports/checker_compare.xlsx
-          --out reports/checker_compare.md`.
+      - **Result (2026-11-01): no second gate; Gemma stays the only checker.**
+        - **The sheet** (`reports/checker_compare.md`; 38 of 64 rows graded, partly):
+          - only MetricX rejects: 2 bad of 8; only Typhoon rejects: 2 of 10; only Gemma rejects: 2 of 10; all
+            pass: 0 of 11.
+          - Neither candidate can still qualify: MetricX would need 6 of its 8 empty rows bad, and Typhoon more
+            bad rows than it has left.
+        - **G1's grades agree** (the user's suggestion; 96 rows a gate would act on, 11 bad):
+          - At the gate thresholds, MetricX (error > 9) rejects none of them.
+          - Looser MetricX thresholds catch some bad translations Gemma passes, but cost as many good ones or
+            more. Beyond Gemma: error > 6 catches 2 bad for 1 good, > 4 catches 4 for 9, > 3 catches 5 for 22.
+          - Typhoon catches nothing useful.
+        - **Gemma's meaning check catches little:**
+          - On G1's gate-relevant rows, at 4.0 it catches 1 of 11 bad translations, and it scores 9 of them 5.0.
+          - The translations only Gemma rejects are mostly good: 8 of 10 on the sheet, 6 of 7 on G1.
+          - So its 2.6% of rejections mostly lose good questions. The rules and `english_only` do the real
+            filtering.
+          - Taking those questions back would reshuffle LogiQA's sample. For the open sets it would add about 60
+            good prompts, so it was left alone.
+        - The graded sheet is on the laptop in `data/vm/checker_compare/`.
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
@@ -446,9 +463,8 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
   4. **First the checker comparison** (Key decisions):
      - `bash scripts/checker_compare.sh`: **done** (15 min of GPU; MetricX and Typhoon, since CometKiwi's gate
        stayed closed);
-     - the user grades `reports/checker_compare.xlsx` (64 rows);
-     - `distill checker-report reports/checker_compare.xlsx --out reports/checker_compare.md`;
-     - decide, then delete the losing models from `~/hf`.
+     - the user graded 38 of its 64 rows; with G1's grades, **no second gate** (Key decisions);
+     - MetricX and Typhoon 2.5 still sit in `~/hf` (81 GiB): deleting them waits for the user's go-ahead.
   5. **G2, night 2 (about 4.4 h):** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh`.
      - It takes every remaining open prompt (No Robots 775, HelpSteer2 792, UltraFeedback 652) and 700 more LogiQA,
        plus the redo.
