@@ -110,7 +110,6 @@ def group_stats(rows, min_score, student=None):
         "finish_reason == length": share(rows, lambda r: r.get("finish_reason") == "length"),
         "empty rationale": share(rows, lambda r: not (r.get("rationale") or "").strip()),
         "unclosed think tag": share(rows, lambda r: r.get("think_unclosed")),
-        "total cost (USD)": f"{sum(r.get('cost') or 0 for r in rows):.4f}",
     }
     if student:
         st = [student_tokens(r, student) for r in rows]
@@ -255,10 +254,9 @@ def throughput_lines(paths):
             for f in sorted(d.glob("*.runs.jsonl")) for s in iter_jsonl(f)]
     if not runs:
         return []
-    lines = ["## Throughput", "", "| output | stage | backend | done | failed | tok/s | minutes |",
-             "|---|---|---|---:|---:|---:|---:|"]
-    lines += [f"| {name} | {s['stage']} | {s.get('backend', '')} | {s['done']} | {s['failed']} | "
-              f"{s['tok_per_s']:,.0f} | {s['seconds'] / 60:,.1f} |" for name, s in runs]
+    lines = ["## Throughput", "", "| output | stage | done | failed | tok/s | minutes |", "|---|---|---:|---:|---:|---:|"]
+    lines += [f"| {name} | {s['stage']} | {s['done']} | {s['failed']} | {s['tok_per_s']:,.0f} | {s['seconds'] / 60:,.1f} |"
+              for name, s in runs]
     return lines + [""]
 
 
@@ -356,9 +354,8 @@ def rejection_reasons(r, fcfg, max_reasoning_tokens=None, max_rationale_words=No
         if lp and any(la and la != lp for la in found):
             reasons.append("language_mismatch")
     rep = fcfg["repetition"]
-    # Raw thinking is not trained on once a rationale replaces it, so only legacy rows have it checked.
-    texts = (answer, rationale) if r.get("cot_method") else (answer, reasoning)
-    if max(repetition_ratio(t, rep["n"], rep["min_ngrams"]) for t in texts) > rep["max_ratio"]:
+    # The raw thinking is never trained on, so only the answer and the rationale are checked.
+    if max(repetition_ratio(t, rep["n"], rep["min_ngrams"]) for t in (answer, rationale)) > rep["max_ratio"]:
         reasons.append("repetition")
     if r.get("mode") == "hint":
         text = "\n".join((reasoning, rationale, answer)).lower()

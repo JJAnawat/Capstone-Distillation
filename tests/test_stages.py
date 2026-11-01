@@ -66,6 +66,9 @@ def test_compress_rewrites_finished_samples_only(tmp_path):
 
 # ---------------------------------------------------------------- verify
 
+LOGIQA_GOLD = ["B", "B. Tom purrs.", "Tom purrs."]  # data._logiqa: letter, letter and option, option
+
+
 @pytest.mark.parametrize("answer, gold, ok", [
     ("Some reasoning.\nFinal answer: Paris", ["Paris"], True),
     ("Final answer: **Sad**.", ["Sad\n****\n"], True),
@@ -77,21 +80,13 @@ def test_compress_rewrites_finished_samples_only(tmp_path):
     ("Final answer: B", ["A"], False),
     ("Final answer: the cat", ["cat", "a dog"], True),
     ("No marker at all: Paris", ["Paris"], False),
+    *((f"Reasoning.\nFinal answer: {final}", LOGIQA_GOLD, ok) for final, ok in [
+        ("B", True), ("**B**", True), ("(B)", True), ("B. Tom purrs.", True), ("Tom purrs.", True),
+        ("C", False), ("A", False), ("C. Tom flies.", False)]),
+    ("Final answer: A", ["A", "A. The cat.", "The cat."], True),  # "A" is not dropped as an article
 ])
 def test_is_correct(answer, gold, ok):
     assert verify.is_correct(answer, gold) is ok
-
-
-LOGIQA_GOLD = ["B", "B. Tom purrs.", "Tom purrs."]  # data._logiqa: letter, letter and option, option
-
-
-@pytest.mark.parametrize("final, ok", [
-    ("B", True), ("**B**", True), ("(B)", True), ("B. Tom purrs.", True), ("Tom purrs.", True),
-    ("C", False), ("A", False), ("C. Tom flies.", False),
-])
-def test_is_correct_option_letters(final, ok):
-    assert verify.is_correct(f"Reasoning.\nFinal answer: {final}", LOGIQA_GOLD) is ok
-    assert verify.is_correct("Final answer: A", ["A", "A. The cat.", "The cat."])  # "A" is not dropped as an article
 
 
 def test_extract_boxed_takes_the_last_with_nested_braces():
@@ -129,21 +124,16 @@ def test_judge_messages_put_the_response_last():
     assert "[Reasoning]" not in judge.judge_messages(system, user, "Q?", None, "", "Ans.")[1]["content"]
 
 
-def test_parse_grade_with_logprobs():
+def test_parse_grade():
     top = [{"token": "7", "logprob": math.log(0.6)}, {"token": " 8", "logprob": math.log(0.3)},
            {"token": "x", "logprob": math.log(0.1)}]
     lp = {"content": [{"token": "{", "logprob": 0.0, "top_logprobs": []},
                       {"token": "7", "logprob": math.log(0.6), "top_logprobs": top}]}
     score, expected, critique = judge.parse_grade(completion('{"critique": "Good.", "score": 7}', logprobs=lp))
     assert score == 7 and critique == "Good." and expected == pytest.approx((7 * 0.6 + 8 * 0.3) / 0.9)
-
-
-def test_parse_grade_strips_thought_block_and_falls_back_without_logprobs():
+    # Gemma's empty thought block is stripped; without logprobs the expected score is the score itself.
     score, expected, _ = judge.parse_grade(completion('<|channel>thought\n<channel|>{"critique": "Ok.", "score": 5}'))
     assert score == 5 and expected == 5.0
-
-
-def test_parse_grade_rejects_a_reply_without_score():
     with pytest.raises(ValueError):
         judge.parse_grade(completion("I think it is fine."))
 
@@ -154,25 +144,19 @@ def test_judge_candidates():
             gen_row(1, sample_idx=1, closed=True, gold=["Paris"], answer="Final answer: Rome"),   # fails, sibling passes
             gen_row(2, closed=True, gold=["X"], answer="Final answer: Y")]                        # none pass: all
     assert {(r["id"], r["sample_idx"]) for r in judge.candidates(rows)} == {("p0", 0), ("p0", 1), ("p1", 0), ("p2", 0)}
-
-
-def test_judge_candidates_all_includes_rule_failing_samples():
-    rows = [gen_row(1, closed=True, gold=["Paris"], answer="Final answer: Paris"),
-            gen_row(1, sample_idx=1, closed=True, gold=["Paris"], answer="Final answer: Rome")]
-    assert len(judge.candidates(rows)) == 1 and len(judge.candidates(rows, all_samples=True)) == 2
+    assert len(judge.candidates(rows, all_samples=True)) == len(rows)  # rule-failing closed samples too
 
 
 def test_judge_config_thinking_override():
     assert judge.judge_config(CFG)["max_tokens"] == CFG["judge"]["max_tokens"]
-    assert judge.judge_config(CFG, prompt_version="v1")["prompt_version"] == "v1"
-    assert generate.load_template("judge", "v1")[2] != generate.load_template("judge", CFG["judge"]["prompt_version"])[2]
+    assert judge.judge_config(CFG, prompt_version="v9")["prompt_version"] == "v9"
     on = judge.judge_config(CFG, thinking=True)
     assert on["thinking"] and on["max_tokens"] == CFG["judge"]["max_tokens_thinking"]
-    body = judge.judge_body(server.endpoint(CFG, "judge", "vllm"), on, [{"role": "user", "content": "x"}])
+    body = judge.judge_body(server.endpoint(CFG, "judge"), on, [{"role": "user", "content": "x"}])
     assert body["chat_template_kwargs"] == {"enable_thinking": True} and body["max_tokens"] == 4096
 
 
-def test_validate_records_agreement_thinking_and_cost(tmp_path, monkeypatch):
+def test_validate_records_agreement_thinking_and_tokens(tmp_path, monkeypatch):
     rows = [{"prompt": "Q1?", "response": "good", "helpfulness": 4}, {"prompt": "Q1?", "response": "bad", "helpfulness": 1},
             {"prompt": "Q2?", "response": "fine", "helpfulness": 2}, {"prompt": "Q2?", "response": "great", "helpfulness": 3},
             {"prompt": "Q3?", "response": "same", "helpfulness": 2}, {"prompt": "Q3?", "response": "same2", "helpfulness": 2}]
@@ -183,7 +167,7 @@ def test_validate_records_agreement_thinking_and_cost(tmp_path, monkeypatch):
         answer = body["messages"][1]["content"].rsplit("[Answer]\n", 1)[1]
         return completion(json.dumps({"critique": "x", "score": scores[answer]}), completion_tokens=40)
     out = tmp_path / "validation.md"
-    agreement = judge.validate(CFG, 10, out=out, backend="vllm", client=mock_client(reply), thinking=True)
+    agreement = judge.validate(CFG, 10, out=out, client=mock_client(reply), thinking=True)
     assert agreement == 0.5
     row = out.read_text(encoding="utf-8").splitlines()[-1]
     assert "| on |" in row and "| 2 | 50.0% |" in row and "| 40 |" in row
@@ -195,31 +179,23 @@ def test_judge_run_writes_scores_and_resumes(tmp_path, monkeypatch):
     src = tmp_path / "x.kept.jsonl"
     report.write_jsonl(src, [gen_row(0, rationale="1. Think.")])
     bodies = []
-    judge.run(CFG, [src], backend="vllm", client=mock_client(lambda p, b: completion('{"critique": "Fine.", "score": 8}'),
-                                                             bodies))
+    judge.run(CFG, [src], client=mock_client(lambda p, b: completion('{"critique": "Fine.", "score": 8}'), bodies))
     body = bodies[0]
     assert body["temperature"] == 0 and body["logprobs"] and body["response_format"]["type"] == "json_schema"
     assert body["chat_template_kwargs"] == {"enable_thinking": False} and "Ref answer." in body["messages"][1]["content"]
     rec = report.read_jsonl(tmp_path / "x.kept.judge.jsonl")[0]
     assert rec["score"] == 8 and rec["expected_score"] == 8.0 and rec["reference_used"]
     bodies.clear()
-    judge.run(CFG, [src], backend="vllm", client=mock_client(lambda p, b: completion("{}"), bodies))
+    judge.run(CFG, [src], client=mock_client(lambda p, b: completion("{}"), bodies))
     assert bodies == []
 
 
-def test_judge_openrouter_body_has_no_logprobs():
-    body = judge.judge_body(server.endpoint(CFG, "judge", "openrouter"), CFG["judge"], [{"role": "user", "content": "x"}])
-    assert "logprobs" not in body and body["reasoning"] == {"enabled": False}
-
-
-def test_agreement_counts_ties_half():
+def test_agreement_and_auc_count_ties_half():
     assert judge.agreement([(8, 5, 4, 2), (3, 6, 4, 1), (5, 5, 3, 1)]) == pytest.approx(1.5 / 3)
+    assert report.auc([9, 8], [3, 8]) == pytest.approx((2 + 1.5) / 4)
 
 
 # ---------------------------------------------------------------- report: judge vs rules, best-of-k
-
-def test_auc_counts_ties_half():
-    assert report.auc([9, 8], [3, 8]) == pytest.approx((2 + 1.5) / 4)
 
 
 def test_judge_vs_rules():
@@ -300,7 +276,7 @@ def test_final_rows_have_student_tokens_and_a_teacher_group(tmp_path, monkeypatc
     assert final["teacher"]["thinking_tokens"] == 610 and final["teacher"]["max_tokens"] == 32768
     assert final["teacher"]["sampling"] == {"temperature": 1.0} and final["teacher"]["compress_prompt_hash"] == "abc"
     assert final["complexity"] == 2 and final["max_steps"] == 3 and final["n_steps"] == 2
-    for gone in ("reasoning", "reasoning_tokens", "answer_tokens", "prompt_tokens", "finish_reason", "cost", "provider"):
+    for gone in ("reasoning", "reasoning_tokens", "answer_tokens", "prompt_tokens", "finish_reason"):
         assert gone not in final
 
 

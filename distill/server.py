@@ -14,18 +14,11 @@ from pathlib import Path
 import httpx
 
 RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504}
-# Sampling values that change nothing. They are left out on OpenRouter, where require_parameters would otherwise route
-# only to providers that accept them; a local vLLM server always gets every field.
-NEUTRAL = {"min_p": 0.0, "repetition_penalty": 1.0}
 
 
-def endpoint(cfg, role, backend=None):
-    """Settings for `role` (teacher|judge) on `backend` (vllm|openrouter), with `backend` and `api_base` filled in."""
-    backend = backend or cfg["backend"]
-    ep = {**cfg[role][backend], "backend": backend}
-    if backend == "openrouter":
-        ep["api_base"] = cfg["openrouter_api_base"]
-    return ep
+def endpoint(cfg, role):
+    """The vLLM settings of `role` (teacher, judge, or another served model), as a copy the caller may change."""
+    return dict(cfg[role]["vllm"])
 
 
 def server_root(api_base):
@@ -35,23 +28,15 @@ def server_root(api_base):
 
 def make_client(ep, concurrency=None):
     concurrency = concurrency or ep["concurrency"]
-    headers = {"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"} if ep["backend"] == "openrouter" else {}
     # httpx allows 100 connections by default, which would leave most of a large thread pool waiting.
-    return httpx.Client(base_url=ep["api_base"], headers=headers, timeout=httpx.Timeout(ep["timeout_s"], connect=30),
+    return httpx.Client(base_url=ep["api_base"], timeout=httpx.Timeout(ep["timeout_s"], connect=30),
                         limits=httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency))
 
 
 def build_body(ep, messages, sampling, thinking, seed, max_tokens, **extra):
-    """Chat-completions body. vLLM takes the thinking switch as a chat-template argument; OpenRouter has `reasoning`."""
-    if ep["backend"] != "vllm":
-        sampling = {k: v for k, v in sampling.items() if NEUTRAL.get(k, object()) != v}
-    body = {"model": ep["model"], "messages": messages, "max_tokens": max_tokens, "seed": seed, **sampling, **extra}
-    if ep["backend"] == "vllm":
-        body["chat_template_kwargs"] = {"enable_thinking": thinking}
-    else:
-        body["reasoning"] = {"enabled": thinking}
-        body["provider"] = ep["provider"]
-    return body
+    """Chat-completions body; vLLM takes the thinking switch as a chat-template argument."""
+    return {"model": ep["model"], "messages": messages, "max_tokens": max_tokens, "seed": seed, **sampling, **extra,
+            "chat_template_kwargs": {"enable_thinking": thinking}}
 
 
 def call_api(client, body, max_retries):
@@ -150,15 +135,15 @@ def run_pool(stage, work, todo, out, concurrency, key, **info):
 
 
 def serve_command(cfg, role):
-    """`vllm serve` for `role` with the flags from config, plus any in $DISTILL_SERVE_ARGS (used by scripts/bench.sh)."""
-    ep = endpoint(cfg, role, "vllm")
+    """`vllm serve` for `role` with the flags from config, plus any in $DISTILL_SERVE_ARGS."""
+    ep = endpoint(cfg, role)
     return ["vllm", "serve", ep["model"], *map(str, ep["serve_args"]),
             *shlex.split(os.environ.get("DISTILL_SERVE_ARGS", ""))]
 
 
 def serve_env(cfg, role):
     """Environment variables the server needs, from config (`serve_env`); they override the caller's environment."""
-    return {k: str(v) for k, v in (endpoint(cfg, role, "vllm").get("serve_env") or {}).items()}
+    return {k: str(v) for k, v in (endpoint(cfg, role).get("serve_env") or {}).items()}
 
 
 UTIL_FLAG = "--gpu-memory-utilization"
@@ -203,7 +188,7 @@ def fit_gpu(cfg, role, cmd, memory=gpu_memory_mib, sleep=time.sleep):
     """`cmd` with --gpu-memory-utilization lowered so the server fits beside other users' processes on a shared GPU,
     leaving `gpu_share.headroom_gib` free for them. Only the KV cache shrinks, so fewer requests run at once. Waits up
     to `gpu_share.wait_s` while not even the role's `min_gpu_gib` fits, then raises."""
-    share, min_gib = cfg.get("gpu_share"), endpoint(cfg, role, "vllm").get("min_gpu_gib")
+    share, min_gib = cfg.get("gpu_share"), endpoint(cfg, role).get("min_gpu_gib")
     if not share or not min_gib:
         return cmd
     requested, deadline = requested_utilization(cmd), time.time() + share["wait_s"]
@@ -249,7 +234,7 @@ def alive(pid):
 def wait_ready(cfg, role, client=None, poll_s=5, pid=None):
     """Block until the local vLLM server answers /health and serves `role`'s model. Raise after startup_timeout_s,
     or as soon as the server process `pid` exits (a failed start would otherwise only show after the timeout)."""
-    ep = endpoint(cfg, role, "vllm")
+    ep = endpoint(cfg, role)
     client = client or httpx.Client(timeout=10)
     root = server_root(ep["api_base"])
     deadline = time.time() + ep["startup_timeout_s"]

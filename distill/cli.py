@@ -8,9 +8,8 @@ import sys
 import yaml
 from dotenv import load_dotenv
 
-from distill import compress, data, generate, hub, judge, rate, report, selection, server, translate
+from distill import compare, compress, data, generate, hub, judge, rate, report, selection, server, translate
 
-BACKENDS = ["vllm", "openrouter"]
 ROLES = ["teacher", "judge", "typhoon", "checker", "typhoon25"]  # typhoon: comparison only; the rest: other checkers
 MT_ROLES = ["seedx", "madlad", "nllb"]  # sentence-level translators, run in-process with transformers (config `hf:`)
 METRIC_ROLES = ["metricx", "cometkiwi"]  # translation-quality metrics as checkers, in-process (config `metric:`)
@@ -34,7 +33,6 @@ def main(argv=None):
 
 def run(argv=None):
     sys.stdout.reconfigure(encoding="utf-8")
-    load_dotenv(".env")
     # Machine settings (HF_HOME and the like), also for commands typed without `source .vm_env`: without them,
     # downloads land on the VM's nearly full root disk. Variables already set win; the Hugging Face libraries are
     # imported lazily, so they still read these.
@@ -59,7 +57,6 @@ def run(argv=None):
     r.add_argument("--limit", type=int, help="same seeded stratified sample as generate with the same flags")
     r.add_argument("--seed", type=int)
     r.add_argument("--concurrency", type=int)
-    r.add_argument("--backend", choices=BACKENDS)
 
     g = sub.add_parser("generate", help="query the teacher N times per prompt and append JSONL records")
     g.add_argument("--dataset", required=True)
@@ -69,14 +66,12 @@ def run(argv=None):
     g.add_argument("--thinking", choices=["on", "off"], default="on")
     g.add_argument("--n", type=int, help="samples per prompt")
     g.add_argument("--only", choices=["closed", "open"], help=ONLY_HELP)
-    g.add_argument("--limit", type=int, help="pilot: seeded stratified sample of N prompts")
+    g.add_argument("--limit", type=int, help="a seeded stratified sample of N prompts")
     g.add_argument("--seed", type=int)
     g.add_argument("--max-tokens", type=int)
     g.add_argument("--concurrency", type=int)
-    g.add_argument("--max-cost", type=float, help="stop dispatching once this many USD are spent")
     g.add_argument("--prompt-version")
     g.add_argument("--include-reference", action="store_true")
-    g.add_argument("--backend", choices=BACKENDS)
     g.add_argument("--out", required=True)
 
     c = sub.add_parser("compress", help="rewrite thinking-on traces into short rationales (variant B)")
@@ -85,7 +80,6 @@ def run(argv=None):
     c.add_argument("--concurrency", type=int)
     c.add_argument("--redo-wrong-language", action="store_true",
                    help="first drop translated rows whose rationale is in another language, so they are redone")
-    c.add_argument("--backend", choices=BACKENDS)
 
     a = sub.add_parser("analyze", help="write a Markdown report comparing variants, scores and lengths")
     a.add_argument("files", nargs="+")
@@ -105,7 +99,6 @@ def run(argv=None):
     j.add_argument("--thinking", choices=["on", "off"], help="override judge.thinking from config")
     j.add_argument("--prompt-version", help="override judge.prompt_version (rubric) from config")
     j.add_argument("--concurrency", type=int)
-    j.add_argument("--backend", choices=BACKENDS)
 
     s = sub.add_parser("select", help="keep the best samples and write them in curriculum order")
     s.add_argument("file")
@@ -121,12 +114,10 @@ def run(argv=None):
     t.add_argument("--out", help="default: data/translate/<dataset>.jsonl")
     t.add_argument("--dry-run", action="store_true", help="print the pool and sample sizes; call no server")
     t.add_argument("--concurrency", type=int)
-    t.add_argument("--backend", choices=BACKENDS)
     ct = sub.add_parser("check-translation", help="checker: English-bound task?, fluency and meaning (1-5)")
     ct.add_argument("files", nargs="+")
     ct.add_argument("--role", choices=ROLES + METRIC_ROLES, help="the checking model (default: translate.checker)")
     ct.add_argument("--concurrency", type=int)
-    ct.add_argument("--backend", choices=BACKENDS)
     sub.add_parser("similarity", help="embedding cosine of English and Thai prompts (CPU)").add_argument(
         "files", nargs="+")
     bt = sub.add_parser("build-translated", help="write data/prepared/<dataset>.jsonl from checked translations")
@@ -176,16 +167,14 @@ def run(argv=None):
     elif args.cmd == "wait":
         server.wait_ready(cfg, args.role, pid=args.pid)
     elif args.cmd == "rate":
-        rate.run(cfg, args.dataset, only=args.only, limit=args.limit, seed=args.seed, concurrency=args.concurrency,
-                 backend=args.backend)
+        rate.run(cfg, args.dataset, only=args.only, limit=args.limit, seed=args.seed, concurrency=args.concurrency)
     elif args.cmd == "generate":
         generate.run(cfg, args.dataset, mode=args.mode, thinking=args.thinking == "on", limit=args.limit,
                      seed=args.seed, max_tokens=args.max_tokens, out=args.out, n=args.n, concurrency=args.concurrency,
-                     max_cost=args.max_cost, include_reference=args.include_reference, model=args.model,
-                     prompt_version=args.prompt_version, only=args.only, backend=args.backend)
+                     include_reference=args.include_reference, model=args.model, prompt_version=args.prompt_version,
+                     only=args.only)
     elif args.cmd == "compress":
-        compress.run(cfg, args.file, args.out, concurrency=args.concurrency, backend=args.backend,
-                     redo_wrong_language=args.redo_wrong_language)
+        compress.run(cfg, args.file, args.out, concurrency=args.concurrency, redo_wrong_language=args.redo_wrong_language)
     elif args.cmd == "analyze":
         report.analyze(args.files, args.out, min_score=cfg["select"]["min_score"], student=cfg["student"]["tokenizer"])
     elif args.cmd == "filter":
@@ -197,40 +186,39 @@ def run(argv=None):
             ap.error("judge needs FILES and/or --validate N")
         thinking = None if args.thinking is None else args.thinking == "on"
         if args.validate:
-            judge.validate(cfg, args.validate, concurrency=args.concurrency, backend=args.backend, thinking=thinking,
+            judge.validate(cfg, args.validate, concurrency=args.concurrency, thinking=thinking,
                            prompt_version=args.prompt_version)
         if args.files:
-            judge.run(cfg, args.files, concurrency=args.concurrency, backend=args.backend, all_samples=args.all,
-                      thinking=thinking, prompt_version=args.prompt_version)
+            judge.run(cfg, args.files, concurrency=args.concurrency, all_samples=args.all, thinking=thinking,
+                      prompt_version=args.prompt_version)
     elif args.cmd == "select":
         selection.run(cfg, args.file, args.out, order=args.order, min_score=args.min_score)
     elif args.cmd == "translate":
         translate.run(cfg, args.dataset, args.translator, limit=args.limit, out=args.out,
-                      reference=not args.no_reference, concurrency=args.concurrency, backend=args.backend,
-                      dry_run=args.dry_run)
+                      reference=not args.no_reference, concurrency=args.concurrency, dry_run=args.dry_run)
     elif args.cmd == "check-translation":
         for f in args.files:
-            translate.check(cfg, f, role=args.role, concurrency=args.concurrency, backend=args.backend)
+            translate.check(cfg, f, role=args.role, concurrency=args.concurrency)
     elif args.cmd == "similarity":
         for f in args.files:
-            translate.similarity(cfg, f)
+            compare.similarity(cfg, f)
     elif args.cmd == "build-translated":
         translate.build(cfg, args.dataset, args.file)
     elif args.cmd == "compare-sheet":
-        translate.compare_sheet(args.files, args.out)
+        compare.compare_sheet(args.files, args.out)
     elif args.cmd == "compare-report":
-        translate.compare_report(args.xlsx, args.out)
+        compare.compare_report(args.xlsx, args.out)
     elif args.cmd == "compare-pick":
-        translate.compare_pick(cfg, args.per_set, args.out_dir, args.exclude_run)
+        compare.compare_pick(cfg, args.per_set, args.out_dir, args.exclude_run)
     elif args.cmd == "compare-translate":
-        translate.compare_translate(cfg, args.role, args.dir)
+        compare.compare_translate(cfg, args.role, args.dir)
     elif args.cmd == "checker-sample":
-        translate.checker_sample(cfg, args.per_set, args.out_dir)
+        compare.checker_sample(cfg, args.per_set, args.out_dir)
     elif args.cmd == "checker-pick":
-        translate.checker_pick(cfg, args.out_dir, args.roles, per_group=args.per_group, random_n=args.random,
-                               src_dir=args.src_dir)
+        compare.checker_pick(cfg, args.out_dir, args.roles, per_group=args.per_group, random_n=args.random,
+                             src_dir=args.src_dir)
     elif args.cmd == "checker-report":
-        translate.checker_report(args.xlsx, args.out, picks=args.picks)
+        compare.checker_report(args.xlsx, args.out, picks=args.picks)
     elif args.cmd == "push":
         hub.push(cfg, args.out, repo=args.repo)
 

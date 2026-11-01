@@ -1,47 +1,44 @@
 #!/usr/bin/env bash
 # The whole pipeline for a set of prompts: teacher phase (rate, generate, compress), filter, judge phase, select,
 # report. Re-running resumes: every stage skips work that is already in its output file.
-# Settings come from the environment (the run_*.sh wrappers set them):
-#   BACKEND   vllm (start/stop local servers; GPU VM) | openrouter (laptop smoke test)   [vllm]
-#   LIMIT     prompts per dataset and subset, 0 = all                                      [100]
+# Settings come from the environment (run_thai.sh sets them for the Thai sets). The English full run was
+#   DATASETS="no_robots helpsteer2 ultrafeedback" LIMIT=2500 LIMIT_CLOSED=500 BY_SET=1 bash scripts/pipeline.sh
+# and LogiQA on its own with DATASETS=logiqa LIMIT_CLOSED=2500.
+#   LIMIT     prompts per dataset and subset, 0 = all                                      [0]
 #   LIMIT_CLOSED  prompts in each closed set, e.g. 500 for UltraFeedback's noisy one     [LIMIT]
 #   N         samples per prompt for every prompt; empty = by complexity (config)      [config]
-#   VARIANTS  "A B": A = thinking off + <reasoning> tags, B = thinking on + compress      ["A B"]
+#   VARIANTS  A = thinking off + <reasoning> tags (the pilot's comparison), B = thinking on + compress   [B]
 #   DATASETS  datasets to run; logiqa runs on its own (LIMIT_CLOSED)  ["no_robots helpsteer2 ultrafeedback"]
-#   VALIDATE  HelpSteer2 pairs for judge validation (once per OUT), 0 = skip              [300]
+#   VALIDATE  HelpSteer2 pairs for judge validation (once per OUT), 0 = skip              [0]
 #   JUDGE_ALL_CLOSED  1 = judge rule-failing closed samples too (judge-vs-rules check)     [0]
-#   VALIDATE_PROMPTS  judge rubric versions to validate, e.g. "v1 v2"            [config version]
+#   VALIDATE_PROMPTS  judge rubric versions to validate                          [config version]
 #   BY_SET    1 = run each set through teacher, judge and select before the next (time-boxed runs)  [0]
 #   REDO_LANGUAGE  1 = compress first drops translated rows whose rationale is in the wrong language, to redo them [0]
-#   OUT, REPORT  output directory and report path                       [data/pilot2, reports/pilot2.md]
+#   OUT, REPORT  output directory and report path                       [data/full, reports/full.md]
 # Stop with Ctrl-C: the server is shut down and the next run resumes where this one stopped.
 # After each finished set, `distill push` backs up $OUT to the private Hub repo in config hub.repo (if set).
 # The report covers every set in $OUT, also those finished in an earlier session (a resume may name fewer DATASETS).
 set -euo pipefail
 
-BACKEND=${BACKEND:-vllm}
-LIMIT=${LIMIT:-100}
+LIMIT=${LIMIT:-0}
 LIMIT_CLOSED=${LIMIT_CLOSED:-$LIMIT}  # the noisy known-answer set can be smaller
 N=${N:-}  # empty: samples per prompt by complexity (config generate.n_by_complexity)
-VARIANTS=${VARIANTS:-"A B"}
+VARIANTS=${VARIANTS:-B}
 DATASETS=${DATASETS:-"no_robots helpsteer2 ultrafeedback"}
-VALIDATE=${VALIDATE:-300}
+VALIDATE=${VALIDATE:-0}
 JUDGE_ALL_CLOSED=${JUDGE_ALL_CLOSED:-0}
 BY_SET=${BY_SET:-0}
 REDO_LANGUAGE=${REDO_LANGUAGE:-0}
-OUT=${OUT:-data/pilot2}
-REPORT=${REPORT:-reports/pilot2.md}
+OUT=${OUT:-data/full}
+REPORT=${REPORT:-reports/full.md}
 
 source scripts/lib.sh
 mkdir -p "$OUT"
-BK=(--backend "$BACKEND")
 limit_args() {  # --limit for a set: LIMIT, or LIMIT_CLOSED for the closed set (0 = all)
   local l=$LIMIT; if [ "$1" = closed ]; then l=$LIMIT_CLOSED; fi
   if [ "$l" -gt 0 ]; then echo "--limit $l"; fi
 }
 NARG=(); if [ -n "$N" ]; then NARG=(--n "$N"); fi
-start() { if [ "$BACKEND" = vllm ]; then start_server "$1"; fi; }  # OpenRouter needs no local server
-stop() { stop_server; }
 has() { [[ " $1 " == *" $2 "* ]]; }
 
 # Each set is dataset:subset, one per kind of prompt the dataset has: open, and closed (a known answer). UltraFeedback
@@ -53,24 +50,24 @@ for ds in $DATASETS; do
 done
 
 teacher_stage() {  # SET...: rate, generate and compress with one teacher server
-  echo "== teacher phase ($BACKEND): $*"
-  start teacher
+  echo "== teacher phase: $*"
+  start_server teacher
   for s in "$@"; do
     ds=${s%%:*}; only=${s##*:}; name="${ds}_${only}"
     read -r -a LIM <<< "$(limit_args "$only")"
-    with_server teacher distill rate --dataset "$ds" --only "$only" "${LIM[@]}" "${BK[@]}"
+    with_server teacher distill rate --dataset "$ds" --only "$only" "${LIM[@]}"
     if has "$VARIANTS" A; then
       with_server teacher distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" \
-        --mode cot --thinking off "${BK[@]}" --out "$OUT/${name}_A.jsonl"
+        --mode cot --thinking off --out "$OUT/${name}_A.jsonl"
     fi
     if has "$VARIANTS" B; then
       with_server teacher distill generate --dataset "$ds" --only "$only" "${LIM[@]}" "${NARG[@]}" \
-        --mode open --thinking on "${BK[@]}" --out "$OUT/${name}_B_raw.jsonl"
+        --mode open --thinking on --out "$OUT/${name}_B_raw.jsonl"
       REDO=(); if [ "$REDO_LANGUAGE" = 1 ]; then REDO=(--redo-wrong-language); fi
-      with_server teacher distill compress "$OUT/${name}_B_raw.jsonl" "${REDO[@]}" "${BK[@]}" --out "$OUT/${name}_B.jsonl"
+      with_server teacher distill compress "$OUT/${name}_B_raw.jsonl" "${REDO[@]}" --out "$OUT/${name}_B.jsonl"
     fi
   done
-  stop
+  stop_server
 }
 
 ALL_KEPT=()
@@ -89,20 +86,20 @@ filter_stage() {  # SET...: filter, and remember the kept files of this round fo
 }
 
 judge_stage() {  # judge this round's kept files with one judge server
-  echo "== judge phase ($BACKEND)"
-  start judge
+  echo "== judge phase"
+  start_server judge
   for pv in ${VALIDATE_PROMPTS:-config}; do  # each rubric version is validated once per OUT
     if [ "$VALIDATE" -gt 0 ] && [ ! -e "$OUT/.judge_validated_$pv" ]; then
       PV=(); if [ "$pv" != config ]; then PV=(--prompt-version "$pv"); fi
-      with_server judge distill judge --validate "$VALIDATE" "${PV[@]}" "${BK[@]}" && touch "$OUT/.judge_validated_$pv"
+      with_server judge distill judge --validate "$VALIDATE" "${PV[@]}" && touch "$OUT/.judge_validated_$pv"
     fi
   done
-  if [ ${#KEPT_OPEN[@]} -gt 0 ]; then with_server judge distill judge "${KEPT_OPEN[@]}" "${BK[@]}"; fi
+  if [ ${#KEPT_OPEN[@]} -gt 0 ]; then with_server judge distill judge "${KEPT_OPEN[@]}"; fi
   if [ ${#KEPT_CLOSED[@]} -gt 0 ]; then
     ALL=(); if [ "$JUDGE_ALL_CLOSED" = 1 ]; then ALL=(--all); fi
-    with_server judge distill judge "${KEPT_CLOSED[@]}" "${ALL[@]}" "${BK[@]}"
+    with_server judge distill judge "${KEPT_CLOSED[@]}" "${ALL[@]}"
   fi
-  stop
+  stop_server
 }
 
 select_stage() {

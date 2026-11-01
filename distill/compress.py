@@ -36,9 +36,9 @@ def drop_wrong_language(cfg, out):
     return len(rows) - len(keep)
 
 
-def run(cfg, in_path, out, concurrency=None, backend=None, client=None, redo_wrong_language=False):
+def run(cfg, in_path, out, concurrency=None, client=None, redo_wrong_language=False):
     cc = cfg["compress"]
-    ep = server.endpoint(cfg, "teacher", backend)
+    ep = server.endpoint(cfg, "teacher")
     templates = {False: load_template("compress", cc["prompt_version"]),
                  True: load_template("compress", cc.get("translated_prompt_version") or cc["prompt_version"])}
     language = (cfg.get("translate") or {}).get("target", "")
@@ -71,4 +71,4 @@ def run(cfg, in_path, out, concurrency=None, backend=None, client=None, redo_wro
 
     return server.run_pool("compress", work, todo, out, concurrency,
                            lambda r: {"id": r["id"], "sample_idx": r.get("sample_idx", 0)}, input=str(in_path),
-                           backend=ep["backend"], model=ep["model"])
+                           model=ep["model"])

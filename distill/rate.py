@@ -17,9 +17,9 @@ def parse_rating(text):
     return int(matches[-1].group(1)), text[:matches[-1].start()].strip()
 
 
-def run(cfg, dataset, only=None, limit=None, seed=None, concurrency=None, backend=None, client=None, out=None):
+def run(cfg, dataset, only=None, limit=None, seed=None, concurrency=None, client=None, out=None):
     rc = cfg["rate"]
-    ep = server.endpoint(cfg, "teacher", backend)
+    ep = server.endpoint(cfg, "teacher")
     seed = cfg["generate"]["seed"] if seed is None else seed
     system, user, prompt_hash = load_template("rate", rc["prompt_version"])
     out = out or data.complexity_path(dataset)
@@ -46,4 +46,4 @@ def run(cfg, dataset, only=None, limit=None, seed=None, concurrency=None, backen
         return rec, (j.get("usage") or {}).get("completion_tokens", 0)
 
     return server.run_pool("rate", work, todo, out, concurrency, lambda r: {"id": r["id"]}, dataset=dataset,
-                           backend=ep["backend"], model=ep["model"])
+                           model=ep["model"])

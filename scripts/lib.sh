@@ -1,4 +1,4 @@
-# Shared by pipeline.sh and bench.sh (source it from the repo root): load machine settings, activate the venv and
+# Shared by the scripts (source it from the repo root): load machine settings, activate the venv and
 # start/stop a local vLLM server. Ctrl-C or any exit stops the server, so the next run can start cleanly and resume.
 # .vm_env (untracked) holds machine-specific exports such as HF_HOME; ~/.bashrc is often skipped by tmux and scripts.
 if [ -f .vm_env ]; then source .vm_env; fi
@@ -50,7 +50,7 @@ with_server() {  # ROLE CMD...: run CMD; if the server died under it, restart th
   local role=$1 restarts=0 rc; shift
   while true; do
     rc=0; "$@" || rc=$?
-    if [ "$rc" -ne "$SERVER_DOWN" ] || [ "${BACKEND:-vllm}" != vllm ] || [ "$restarts" -ge 2 ]; then return "$rc"; fi
+    if [ "$rc" -ne "$SERVER_DOWN" ] || [ "$restarts" -ge 2 ]; then return "$rc"; fi
     restarts=$((restarts + 1))
     echo "== $(date -u +%H:%M) the $role server died; restarting it ($restarts of 2) and resuming" >&2
     stop_server

@@ -1,8 +1,5 @@
-# Pipeline configuration. CLI flags override the values here.
-
-# Where teacher and judge requests go: vllm (a local `distill serve` on the GPU VM) or openrouter (laptop smoke tests).
-backend: vllm
-openrouter_api_base: https://openrouter.ai/api/v1
+# Pipeline configuration. CLI flags override the values here. Every model is served by a local `distill serve` (vLLM)
+# on the GPU VM, except the in-process `hf:` and `metric:` roles.
 
 # The GPU can be shared with other users. `distill serve` lowers --gpu-memory-utilization to the free memory minus
 # headroom_gib (left for their processes); only the KV cache shrinks. While not even the role's min_gpu_gib fits, it
@@ -29,14 +26,6 @@ teacher:
       - --gpu-memory-utilization=0.92
       - --max-num-seqs=256
       - --port=8000
-  openrouter:
-    model: qwen/qwen3.5-9b
-    concurrency: 8
-    timeout_s: 900
-    # Skip the fp4 provider; only route to providers that honour every sampling param we send (incl. seed).
-    provider: {quantizations: [bf16, fp8], require_parameters: true}
-    # Fallback USD price per 1M tokens, used only when the response has no usage.cost.
-    price_per_mtok: {prompt: 0.10, completion: 0.15}
 
 judge:
   vllm:
@@ -55,14 +44,6 @@ judge:
       - --max-num-seqs=128
       - '--limit-mm-per-prompt={"image": 0, "video": 0}'
       - --port=8000
-  openrouter:
-    model: google/gemma-4-31b-it
-    concurrency: 8
-    timeout_s: 900
-    logprobs: false                      # not every provider returns them; scores fall back to the integer
-    # Not every provider enforces the JSON schema; the prompt asks for JSON and the parser finds it in plain text.
-    provider: {require_parameters: false}
-    price_per_mtok: {prompt: 0.12, completion: 0.35}
   prompt_version: v2                     # v2: stricter anchors (v1 gave almost every Qwen sample a 9)
   thinking: false
   temperature: 0.0                       # deterministic scores (Gemma's card settings are for generation)

@@ -117,10 +117,9 @@ def parse_grade(j):
     return score, expected_score(choice.get("logprobs"), score), str(grade.get("critique", ""))
 
 
-def run(cfg, files, concurrency=None, backend=None, client=None, all_samples=False, thinking=None,
-        prompt_version=None):
+def run(cfg, files, concurrency=None, client=None, all_samples=False, thinking=None, prompt_version=None):
     jc = judge_config(cfg, thinking, prompt_version)
-    ep = server.endpoint(cfg, "judge", backend)
+    ep = server.endpoint(cfg, "judge")
     system, user, prompt_hash = load_template("judge", jc["prompt_version"])
     concurrency = concurrency or ep["concurrency"]
     prompts = {}  # dataset -> {id: prepared row}, for gold answers and references
@@ -150,7 +149,7 @@ def run(cfg, files, concurrency=None, backend=None, client=None, all_samples=Fal
 
         server.run_pool("judge", work, todo, out, concurrency,
                         lambda r: {"id": r["id"], "sample_idx": r.get("sample_idx", 0)}, input=str(path),
-                        backend=ep["backend"], model=ep["model"])
+                        model=ep["model"])
 
 
 def agreement(results):
@@ -159,15 +158,15 @@ def agreement(results):
     return sum(0.5 if ja == jb else float((ja > jb) == (ha > hb)) for ja, jb, ha, hb in results) / len(results)
 
 
-def validate(cfg, n_pairs, out="reports/judge_validation.md", concurrency=None, backend=None, client=None, seed=0,
+def validate(cfg, n_pairs, out="reports/judge_validation.md", concurrency=None, client=None, seed=0,
              thinking=None, prompt_version=None):
     """Judge both responses of HelpSteer2 validation prompts whose human helpfulness ratings differ (no reference,
-    no rationale) and append the agreement with the humans, and what it cost, to `out`. The validation split is never
-    generated from."""
+    no rationale) and append the agreement with the humans, and what it cost in tokens and time, to `out`. The
+    validation split is never generated from."""
     from datasets import load_dataset
 
     jc = judge_config(cfg, thinking, prompt_version)
-    ep = server.endpoint(cfg, "judge", backend)
+    ep = server.endpoint(cfg, "judge")
     system, user, prompt_hash = load_template("judge", jc["prompt_version"])
     by_prompt = defaultdict(list)
     for r in load_dataset(cfg["datasets"]["helpsteer2"]["hf_id"], split="validation"):
@@ -202,7 +201,7 @@ def validate(cfg, n_pairs, out="reports/judge_validation.md", concurrency=None, 
     if not results:
         raise RuntimeError("no validation pair could be judged")
     ties = sum(ja == jb for ja, jb, _, _ in results) / len(results)
-    row = (f"| {datetime.now(timezone.utc):%Y-%m-%d} | {ep['model']} ({ep['backend']}) | "
+    row = (f"| {datetime.now(timezone.utc):%Y-%m-%d} | {ep['model']} | "
            f"{'on' if jc['thinking'] else 'off'} | {prompt_hash} | {len(results)} | {agreement(results):.1%} | "
            f"{ties:.1%} | {sum(tokens) / len(tokens):,.0f} | {(time.time() - start) / 60:,.1f} |")
     path = Path(out)

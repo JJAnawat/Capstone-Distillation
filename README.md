@@ -6,26 +6,29 @@ answer** pairs, samples **N per prompt**, grades them with a judge (Gemma 4 31B)
 writes them **easy → hard** for a curriculum. Raw long thinking is never a training target: it doesn't fit the
 student, and small models learn poorly from it. A **Thai set** is added next to the English one: new questions are
 translated first, checked, and then distilled the same way (see [Thai sets](#thai-sets)). Training is out of scope.
-Project context and design decisions are in [CLAUDE.md](CLAUDE.md).
+Project context is in [CLAUDE.md](CLAUDE.md); every experiment and its results are in
+[docs/experiments.md](docs/experiments.md).
 
 ```
 distill/data.py       load → dedupe → drop multi-turn → gold answers / closed flag → seeded stratified sample
-distill/server.py     endpoints (vllm | openrouter), request bodies, retries, thread-pool runner, vllm serve / wait
+distill/server.py     vLLM endpoints, request bodies, retries, thread-pool runner, vllm serve / wait
 distill/rate.py       question complexity 1-5 (DeReason prompt)
-distill/generate.py   N samples per prompt, response parsing, resume, budget
+distill/generate.py   N samples per prompt, response parsing, resume
 distill/compress.py   variant B: thinking trace → short rationale
 distill/verify.py     rule checks for closed-ended prompts
 distill/judge.py      rubric scores 1-9 for rationale + answer; validation against human preferences
 distill/selection.py  best-of-N / distinct correct samples, curriculum order
 distill/report.py     filter (heuristic rejections) and analyze (Markdown report)
-distill/translate.py  Thai sets: translate new questions, check them (rules, judge, metrics, embeddings), build the
-                      prepared file; the translator and checker comparisons' grading sheets and reports
+distill/translate.py  Thai sets: translate new questions, check them (rules and a checker model), build the
+                      prepared file
+distill/inproc.py     experiments: sentence-level translators and metric checkers run in-process (transformers)
+distill/compare.py    experiments: the translator and checker comparisons (grading sheets, reports, pools)
 distill/cli.py        command line
 config.yaml           every setting: models, servers, sampling, thresholds, datasets
 prompts/              versioned templates: {name}_{version}.txt
-scripts/              pipeline.sh (+ lib.sh), run_pilot.sh / run_full.sh / bench.sh / vm_check.sh / collect.sh (GPU VM),
-                      translate_compare.sh / translate_compare2.sh / second_checker.sh / checker_compare.sh /
-                      run_thai.sh (Thai, GPU VM), smoke_openrouter.sh (laptop)
+scripts/              pipeline.sh (+ lib.sh), run_thai.sh, vm_check.sh; the experiments' translate_compare.sh,
+                      translate_compare2.sh, second_checker.sh, checker_compare.sh
+reports/              results: pilots, full runs, judge validation, the comparisons
 ```
 
 ## Pipeline
@@ -33,101 +36,85 @@ scripts/              pipeline.sh (+ lib.sh), run_pilot.sh / run_full.sh / bench
 prepare  (CPU)  load, dedupe, gold answers
 ── teacher phase: Qwen3.5-9B ────────────────────────────────────────────────────────────
 rate      complexity 1-5 per question
-generate  N=8 samples per prompt   A: --mode cot --thinking off   |   B: --mode open --thinking on
-compress  B only: trace + answer → ≤5-step rationale
+generate  N samples per prompt (2 at level 1, else 4)   B: --mode open --thinking on   |   A: --mode cot --thinking off
+compress  B only: trace + answer → short numbered steps (4-10 by complexity)
 ── CPU ───────────────────────────────────────────────────────────────────────────────────
 filter    heuristic checks, incl. rationale length and the student's context budget
 ── judge phase: Gemma 4 31B ──────────────────────────────────────────────────────────────
 judge     rationale + answer, rubric score 1-9
 ── CPU ───────────────────────────────────────────────────────────────────────────────────
 select    best samples, curriculum order, raw traces dropped
-analyze   A vs B, by complexity level: scores, pass rates, lengths, throughput, examples
+analyze   by set and complexity level: scores, pass rates, lengths, throughput, examples
 ```
-The teacher (≈18 GB) and the judge (≈20 GB) can't share an A100 40GB, so each phase runs its own `vllm serve`.
-Every GPU stage takes `--backend vllm|openrouter`. vllm is a local server on the GPU VM; openrouter is for laptop
-smoke tests.
+The teacher (≈18 GB) and the judge (≈20 GB) can't share an A100 40GB, so each phase runs its own local `vllm serve`.
+Variant B (thinking on, then `compress`) won the pilot and makes all the data; variant A (thinking off, steps inside
+`<reasoning>` tags) stays for comparison (`VARIANTS="A B"`).
 
 ## Setup
 ```bash
 # Laptop (Windows): code and offline tests. No GPU needed.
 uv venv --python 3.12 && uv pip install -e ".[dev]"
 uv run pytest                                   # offline tests, no network, no vLLM
-echo OPENROUTER_API_KEY=sk-or-... > .env        # only for the OpenRouter smoke test; never commit
 
 # GPU VM (Linux, over SSH): after git clone / pull
-uv venv --python 3.12 && uv pip install -e ".[dev,vm]"
-hf download Qwen/Qwen3.5-9B && hf download google/gemma-4-31B-it-qat-w4a16-ct   # ≈38 GB; set HF_HOME to a big disk
+uv venv --python 3.12 && uv pip install -e ".[dev,vm]"     # extras: qe (similarity), mt (in-process translators)
+bash scripts/vm_check.sh                                   # GPU, disk, network, vLLM version and flags
+hf download Qwen/Qwen3.5-9B && hf download google/gemma-4-31B-it-qat-w4a16-ct   # ≈38 GB into $HF_HOME
 uv run distill prepare
 ```
-On a company network, check first that the VM can reach huggingface.co (set a proxy or `HF_ENDPOINT` if needed).
-
-## VM sessions
-The GPU VM is used in sessions of a few hours. Everything runs inside tmux. **Ctrl-C** stops cleanly: the server is
-shut down and its GPU memory released. Re-running the same command resumes. After each session,
-`scripts/collect.sh` copies the small results (reports, run summaries, rejection and selection counts, error samples,
-server-log highlights, complexity counts) into `reports/<name>/` for one commit and push.
-
-```bash
-# Session 1: setup and smoke test (~1-1.5 h, mostly downloads)
-git clone <repo> && cd Distillation
-bash scripts/vm_check.sh | tee reports/vm_check.txt          # GPU, disk, network, tools
-uv venv --python 3.12 && uv pip install -e ".[dev,vm]"
-bash scripts/vm_check.sh | tee reports/vm_check.txt          # again: vLLM version and the flags we use
-uv run pytest
-hf download Qwen/Qwen3.5-9B && hf download google/gemma-4-31B-it-qat-w4a16-ct   # ≈38 GB
-uv run distill prepare
-tmux new -s smoke 'LIMIT=5 VALIDATE=20 OUT=data/smoke_vm REPORT=reports/smoke_vm.md bash scripts/run_pilot.sh 2>&1 | tee -ai logs/smoke.log'
-bash scripts/collect.sh smoke_vm data/smoke_vm && git add reports && git commit -m "Results: smoke_vm" && git push
-
-# Session 2: pilot, both variants, 100 prompts per set, 8 samples (~2-2.5 h; can span sessions)
-tmux new -s pilot 'bash scripts/run_pilot.sh 2>&1 | tee -ai logs/pilot.log'
-bash scripts/collect.sh pilot2 data/pilot2 --data           # --data also packs kept + judge files for scp
-
-# Session 3: experiments (~1.5 h)
-tmux new -s bench 'bash scripts/bench.sh 2>&1 | tee -ai logs/bench.log'   # throughput settings → reports/bench.md
-tmux new -s judge 'bash -c "source scripts/lib.sh && start_server judge && distill judge --validate 300 --thinking on"'
-bash scripts/collect.sh bench data/bench
-
-# Full run with the pilot's winning variant (B). The same command resumes; DATASETS=... skips finished sets.
-tmux new -s full 'BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log'
-# LogiQA (closed only) runs on its own, so LIMIT_CLOSED=500 stays UltraFeedback's. Prepare it once first:
-distill prepare --dataset logiqa
-tmux new -s logiqa 'DATASETS=logiqa BY_SET=1 LIMIT=2500 LIMIT_CLOSED=2500 VARIANTS=B VALIDATE=0 bash scripts/run_full.sh 2>&1 | tee -ai logs/full.log'
-
-# Time-boxed GPU window: Ctrl-C 10 min before the end (the run stops its server and resumes next time).
-# S = seconds until then; -X cancel first, because C-c only leaves copy mode when someone is scrolling the pane.
-tmux new -d -s stopper "sleep $S; tmux send-keys -t full -X cancel 2>/dev/null; tmux send-keys -t full C-c"
-```
-The first full run (all five sets, 12,432 final rows) finished on 2026-10-27. Rerunning the commands above only
-resumes it; a larger `LIMIT` adds prompts. Night 3 used a stricter stopper, `logs/stopper.sh` on the VM (untracked).
-It waits for clock times instead of a sleep count, and 3 min before the end it kills any of our processes still on
-the GPU.
-Monitor with `tail -f logs/pilot.log logs/vllm_teacher.log` (tmux: `Ctrl-b d` detaches, `tmux attach -t pilot`
-returns).
-
-**Machine settings** go in `.vm_env` in the repo root. It is untracked, and the scripts source it, because
-`~/.bashrc` is often skipped by tmux and non-interactive shells. Source it yourself for commands typed by hand. On the
-current VM the root disk is nearly full, but the home directory is on a shared filesystem with room, so the model,
-dataset and vLLM caches live there (not in `/dev/shm`, which is wiped when the user is fully logged out):
+**Machine settings** go in `.vm_env` in the repo root (untracked). `distill` and the scripts load it, because
+`~/.bashrc` is often skipped by tmux and non-interactive shells. On the current VM the root disk is nearly full, so the
+caches live in the home on a shared filesystem (not `/dev/shm`, which is wiped when the user is fully logged out):
 ```bash
 export HF_HOME=$HOME/hf
 export VLLM_CACHE_ROOT=$HOME/vllm-cache
 export HF_TOKEN=hf_...   # only for Hub backups: a fine-grained token with write access to the backup repo alone
 ```
 
-**Hub backup.** Generated data lives only on the VM, so with `hub.repo` set in `config.yaml` the pipeline runs
-`distill push $OUT` after every finished set. It uploads the run directory and the complexity ratings
-(`data/prepared/*.complexity.jsonl`) to that dataset repo, which must be private (it is created private, and a public
-one is refused). Unchanged files are skipped, and a failed upload only prints a warning. Run it by hand with
-`distill push data/full`. To restore on another machine, `hf download <repo> --repo-type dataset --local-dir .` puts
-the files back at their paths, and every stage resumes from them. Each push also rewrites the repo's dataset card
-(`README.md`, from `docs/dataset_card.md`). It covers every run directory in `hub.runs` (`data/full`, `data/full_th`),
-whichever one is pushed. It names one subset per file stage (`final`, `judge`, `samples`, `rejected`, `ratings`) with
-one split per set, plus a status table and an example per set. Closed and Thai sets get their own subsets
-(`final_closed`, `final_th`, `final_th_closed`, ...), because their extra columns (`gold`; `input_en`, `translation`)
-cannot share a schema with the others. The Thai prepared files (`data/prepared/*_th.jsonl`) are backed up too, since
-rebuilding them takes a GPU. The token is a secret: put it in `.vm_env` (never
-committed), not in `config.yaml`.
+## Running on the VM
+Everything runs inside tmux. **Ctrl-C** stops cleanly: the server is shut down and its GPU memory released, and
+re-running the same command resumes. Launch with `tee -ai` (a plain `tee` dies on Ctrl-C).
+```bash
+# English full run (done 2026-10-27: 12,432 final rows). The same command resumes; a larger LIMIT adds prompts.
+tmux new -s full 'BY_SET=1 LIMIT=2500 LIMIT_CLOSED=500 bash scripts/pipeline.sh 2>&1 | tee -ai logs/full.log'
+# LogiQA (closed only) runs on its own, so LIMIT_CLOSED=500 stays UltraFeedback's. Prepare it once first.
+distill prepare --dataset logiqa
+tmux new -s logiqa 'DATASETS=logiqa BY_SET=1 LIMIT_CLOSED=2500 bash scripts/pipeline.sh 2>&1 | tee -ai logs/full.log'
+
+# A time-boxed GPU window: Ctrl-C 10 min before the end (the run stops its server and resumes next time).
+# S = seconds until then; -X cancel first, because C-c only leaves copy mode when someone is scrolling the pane.
+tmux new -d -s stopper "sleep $S; tmux send-keys -t full -X cancel 2>/dev/null; tmux send-keys -t full C-c"
+```
+Monitor with `tail -f logs/full.log logs/vllm_teacher.log` (tmux: `Ctrl-b d` detaches, `tmux attach -t full`
+returns). Every GPU stage prints a progress line each minute (done/total, tok/s, ETA) and appends a summary to
+`<out>.runs.jsonl`; `analyze` turns those into a throughput table.
+
+`scripts/pipeline.sh` does the work:
+1. Starts the teacher server; rates, generates and compresses; stops it.
+2. Filters.
+3. Starts the judge server; validates the judge (if `VALIDATE` > 0, once per output directory) and judges; stops it.
+4. Selects, backs up to the Hub and reports. The report covers every set in `OUT`, also those from earlier sessions.
+
+Settings come from environment variables (defaults in brackets): `LIMIT` [0 = all], `LIMIT_CLOSED` [LIMIT], `N`,
+`VARIANTS` [B], `DATASETS`, `VALIDATE` [0], `JUDGE_ALL_CLOSED`, `BY_SET`, `REDO_LANGUAGE`, `OUT` [data/full],
+`REPORT` [reports/full.md]. `BY_SET=1` runs each set through teacher, judge and select before the next: a few minutes
+of model swaps per set, but a run cut short still leaves finished data for the sets it completed.
+
+- **A dead server restarts itself.** If 16 requests in a row fail at the connection level (after their retries), the
+  stage stops with exit code 75 instead of failing every queued request. `with_server` (`scripts/lib.sh`) then restarts
+  the server and resumes the stage, at most twice.
+- **The GPU can be shared.** `start_server` refuses only if our own processes hold the GPU; other users' processes are
+  listed and never stopped. `distill serve` lowers `--gpu-memory-utilization` to the free memory minus
+  `gpu_share.headroom_gib`; only the KV cache shrinks. If not even the role's `min_gpu_gib` fits, it waits up to
+  `gpu_share.wait_s` and then fails.
+- **Hub backup.** Generated data lives only on the VM, so with `hub.repo` set the pipeline runs `distill push $OUT`
+  after every finished set. It uploads the run directory and the complexity ratings to that dataset repo, which must
+  be private (it is created private, and a public one is refused). A failed upload only prints a warning.
+  `hf download <repo> --repo-type dataset --local-dir .` restores the files at their paths, and every stage resumes
+  from them. Each push also rewrites the dataset card (from `docs/dataset_card.md`) for every run in `hub.runs`: one
+  subset per file stage (`final`, `judge`, `samples`, `rejected`, `ratings`) with one split per set, and separate
+  subsets for closed and Thai sets (`final_closed`, `final_th`, `final_th_closed`, …), whose extra columns can't share
+  a schema. The Thai prepared files are backed up too, since rebuilding them takes a GPU.
 
 **Using the data.** The training rows are the `final` subsets. Each row's `input` is the prompt, and its target is
 `rationale` (numbered steps separated by blank lines) followed by `answer`.
@@ -136,69 +123,31 @@ from datasets import load_dataset   # after `hf auth login` with an account in t
 repo = "capstone-thai-slm/capstone-distill-data"
 chat = load_dataset(repo, "final", split="no_robots")           # also helpsteer2, ultrafeedback
 logiqa = load_dataset(repo, "final_closed", split="logiqa")     # also ultrafeedback (its closed set)
-thai = load_dataset(repo, "final_th", split="no_robots")        # Thai sets, once run: also helpsteer2, ultrafeedback
+thai = load_dataset(repo, "final_th", split="no_robots")        # also helpsteer2, ultrafeedback
 thai_logiqa = load_dataset(repo, "final_th_closed", split="logiqa")
-local = load_dataset("json", data_files="data/vm/full_night3/logiqa_closed_B.final.jsonl", split="train")
 ```
-The models themselves are not in the repo. They are unchanged Hugging Face downloads in `$HF_HOME` on the VM
-(`~/hf`). `distill serve teacher` (or `judge`) runs one by hand behind an OpenAI-style API at `localhost:8000/v1`,
-but only during a GPU window. Normally the pipeline starts and stops them.
+The models are not in the repo: they are unchanged Hugging Face downloads in `$HF_HOME` on the VM. `distill serve
+teacher` (or `judge`) runs one by hand behind an OpenAI-style API at `localhost:8000/v1`, during a GPU window.
 
-`scripts/pipeline.sh` does the work:
-1. Starts the teacher server; rates, generates and compresses; stops it.
-2. Filters.
-3. Starts the judge server; validates the judge (once per output directory) and judges; stops it.
-4. Selects, backs up to the Hub (if `hub.repo` is set) and reports. The report covers every set in `OUT`, also those
-   finished in an earlier session.
-
-**A dead server restarts itself.** If 16 requests in a row fail at the connection level (after their retries), the
-stage stops with exit code 75 instead of failing every queued request. `pipeline.sh` (`with_server`) then restarts
-the server and resumes the stage, at most twice.
-
-Before starting a server, `start_server` refuses only if our own processes hold the GPU (a server left from an earlier
-run). The GPU can be shared: other users' processes are listed as a note and never stopped. `distill serve` then
-lowers `--gpu-memory-utilization` to the free memory minus `gpu_share.headroom_gib`. The weights are fixed, so only
-the KV cache shrinks and fewer requests run at once. If not even the role's `min_gpu_gib` fits, it waits up to
-`gpu_share.wait_s` and then fails.
-
-Settings come from environment variables: `LIMIT`, `N`, `VARIANTS`, `DATASETS`, `VALIDATE`, `JUDGE_ALL_CLOSED`, `OUT`,
-`REPORT`, `BACKEND`.
-- `BY_SET=1` runs each set through teacher, judge and select before starting the next. That costs a few minutes of
-  model swaps per set, but a time-boxed run that gets cut off still leaves finished training data for the sets it
-  completed.
-- `run_pilot.sh` sets `JUDGE_ALL_CLOSED=1`: rule-failing closed samples are judged too, so the report can show how well
-  the judge separates right from wrong answers.
-- `scripts/bench.sh` reruns the pilot's no_robots generation (variant B, N=8, 100 prompts) with MTP speculative
-  decoding (`"method": "mtp"`, passed through `DISTILL_SERVE_ARGS`; about 16 min). It tabulates tok/s and the speed-up
-  against the pilot.
-  - Async scheduling is already on by default in vLLM 0.32, so it isn't tested.
-  - Concurrency 128 can't beat 256, which already fills the KV cache.
-- A laptop smoke test through OpenRouter is also available: `bash scripts/smoke_openrouter.sh` (Git Bash; costs cents).
-
-Single stages, for example by hand on the VM:
+Single stages, by hand on the VM:
 ```bash
 uv run distill serve teacher                     # vllm serve with the flags in config.yaml (foreground)
 uv run distill wait teacher                      # blocks until the server is up and serving the teacher
 uv run distill rate --dataset no_robots --limit 100
-uv run distill generate --dataset no_robots --limit 100 --n 8 --mode cot --thinking off --out data/x/no_robots_A.jsonl
-uv run distill generate --dataset no_robots --limit 100 --n 8 --mode open --thinking on --out data/x/no_robots_B_raw.jsonl
+uv run distill generate --dataset no_robots --limit 100 --mode open --thinking on --out data/x/no_robots_B_raw.jsonl
 uv run distill compress data/x/no_robots_B_raw.jsonl --out data/x/no_robots_B.jsonl
-uv run distill filter data/x/no_robots_A.jsonl --out data/x/no_robots_A.kept.jsonl
+uv run distill filter data/x/no_robots_B.jsonl --out data/x/no_robots_B.kept.jsonl
 uv run distill serve judge                       # after stopping the teacher server
-uv run distill judge --validate 300 data/x/no_robots_A.kept.jsonl   # --all: every sample; --thinking on|off
-uv run distill select data/x/no_robots_A.kept.jsonl --out data/x/no_robots_A.final.jsonl
+uv run distill judge data/x/no_robots_B.kept.jsonl          # --validate N, --all, --thinking on|off
+uv run distill select data/x/no_robots_B.kept.jsonl --out data/x/no_robots_B.final.jsonl
 uv run distill analyze data/x/*.kept.jsonl --out reports/x.md
-#   other generate flags: --only closed|open  --model  --concurrency  --seed  --max-tokens  --prompt-version
-#                         --max-cost (OpenRouter)  --include-reference  --backend openrouter
+#   other generate flags: --only closed|open  --n  --model  --concurrency  --seed  --max-tokens  --prompt-version
+#                         --include-reference
 ```
 Datasets: `no_robots`, `helpsteer2`, `ultrafeedback`, `logiqa`, and the Thai sets `<name>_th`. To add one, add an
-entry in `config.yaml` and a loader in `data.LOADERS`.
-
-**Resume:** every stage appends to its output and skips keys already there: `(id, sample_idx)`, or `id` for ratings.
-Requests that fail after all retries go to `<out>.errors.jsonl` and are retried on the next run.
-**Monitoring:** each GPU stage prints a progress line every minute (done/total, tok/s, ETA) and appends a summary to
-`<out>.runs.jsonl`. `analyze` turns those summaries into a throughput table.
-**Budget:** `--max-cost` (OpenRouter) stops new requests once the spent USD reaches the limit.
+entry in `config.yaml` and a loader in `data.LOADERS`. Every stage appends to its output and skips keys already there
+(`(id, sample_idx)`, or `id` for ratings); requests that fail after all retries go to `<out>.errors.jsonl` and are
+retried on the next run.
 
 ## Data preparation
 - **Prompt as the only input.** The input is `prompt` (No Robots, HelpSteer2) or `instruction` (UltraFeedback).
@@ -206,56 +155,47 @@ Requests that fail after all retries go to `<out>.errors.jsonl` and are retried 
   multiple-choice rows are used (the mirror also holds Chinese and NLI rows). The prompt is the premise, the question,
   options `A.`–`D.`, then "Answer with the letter of the correct option."
 - **Adding a dataset later:** put it last in `config.yaml` and run `distill prepare --dataset NAME`. That builds only
-  this dataset, deduped against the earlier datasets' prepared files, and leaves those files and their samples
-  untouched. `distill subsets NAME` prints which sets it has (`open`, `closed`), and `pipeline.sh` makes one of each.
+  this dataset, deduped against the earlier ones, and leaves their files and samples untouched. `distill subsets NAME`
+  prints which sets it has (`open`, `closed`), and `pipeline.sh` makes one of each.
 - **Dedup.** The ID is `sha256(normalize(prompt))[:16]`, where normalize means NFKC, collapsed whitespace and casefold.
   Duplicates are removed within each dataset and across datasets, in config order.
 - **Multi-turn rows are excluded:** No Robots "Chat" rows (their `prompt` is a system persona) and HelpSteer2 prompts
   with `<extra_id_1>` turn markers. Counts are in `data/prepared/stats.json`.
-- **Gold answers.** UltraFeedback's `correct_answers`, without the literal "None" that other sources carry.
-- **Closed-ended prompts** have short gold answers (≤4 words) from flan_v2_niv2, flan_v2_p3 or flan_v2_flan2021
-  (10,603 prompts). They are rule-checked. truthful_qa golds such as "I have no comment" aren't exact-matchable, so
-  those prompts go to the judge with the gold as its reference.
-  - A dataset with `closed: true` (LogiQA) is closed wherever it has golds. LogiQA's are the letter, the letter with
-    its option, and the option text.
+- **Closed-ended prompts** have short gold answers (≤4 words) from UltraFeedback's `correct_answers` in flan_v2_niv2,
+  flan_v2_p3 or flan_v2_flan2021 (10,603 prompts). They are rule-checked. truthful_qa golds such as "I have no
+  comment" aren't exact-matchable, so those prompts go to the judge with the gold as its reference.
+  - A dataset with `closed: true` (LogiQA) is closed wherever it has golds: the letter, the letter with its option,
+    and the option text.
   - If no sample of a closed prompt passes the rule check, its samples go to the judge, since a noisy gold may be
-    right without matching exactly.
-  - With `exact_gold: true` (LogiQA), such a prompt is dropped instead: its gold is exact, so the judge could only
-    choose among wrong answers.
-- **Reference** (used by the judge, in hint mode, or with `--include-reference`): No Robots uses the human answer,
-  HelpSteer2 its best-rated response, UltraFeedback the completion with the highest `fine-grained_score`.
-- **Hint eligibility** is set by `hint.min_ratings`: all No Robots rows; HelpSteer2 helpfulness, correctness and
-  coherence all ≥ 4; UltraFeedback fine-grained score 5.0 and overall score ≥ 8. The judge only uses a dataset
-  response as its reference when it is hint-eligible.
+    right without matching exactly. With `exact_gold: true` (LogiQA) such a prompt is dropped instead.
+- **Reference** (shown to the judge, used in hint mode or with `--include-reference`): No Robots uses the human answer,
+  HelpSteer2 its best-rated response, UltraFeedback the completion with the highest `fine-grained_score`. It is used
+  only when hint-eligible (`hint.min_ratings`).
 
 ## Generation
-- **Sampling** follows the Qwen3.5-9B model card's general-task settings, and every field is sent, because a local
-  vLLM server fills unsent fields from the model's generation_config.json.
-  - Thinking on: temperature 1.0, top_p 0.95, top_k 20, min_p 0, presence_penalty 1.5, repetition_penalty 1.0.
-  - Thinking off: 0.7, 0.8, 20, 0, 1.5, 1.0.
-- **Seeds:** each sample's seed is derived from `(seed, id, sample_idx)`. Samples are reproducible per request, but
-  not bit-exact under different batching.
+- **Sampling** follows the Qwen3.5-9B card's general-task settings, and every field is sent, because a local vLLM
+  server fills unsent fields from the model's generation_config.json. Thinking on: temperature 1.0, top_p 0.95,
+  top_k 20, min_p 0, presence_penalty 1.5, repetition_penalty 1.0. Thinking off: 0.7, 0.8, 20, 0, 1.5, 1.0.
+- **Seeds:** each sample's seed is derived from `(seed, id, sample_idx)`: reproducible per request, not bit-exact
+  under different batching.
 - **Modes:**
-  - `cot` (variant A): thinking off. The model reasons in at most 5 numbered steps inside `<reasoning>` tags, then
-    answers. The steps are stored as `rationale`. Output is capped at `cot.max_tokens` (4,096).
   - `open`: the plain assistant prompt. With thinking on, this is variant B, whose trace goes to `compress`.
-  - `hint` (experimental): the reference answer is a private note in the system prompt and is never stored in
-    `input`. The filter's `hint_leakage` check catches phrases like "provided answer".
+  - `cot` (variant A): thinking off; numbered steps inside `<reasoning>` tags, then the answer. Capped at
+    `cot.max_tokens` (4,096).
+  - `hint` (experimental): the reference answer is a private note in the system prompt, never stored in `input`.
 - **Closed-ended prompts** use `{mode}_closed_{version}` templates, which ask for a final line `Final answer: <answer>`.
-- **Complexity sets the effort.** The rating made before generation picks the samples per prompt
-  (`generate.n_by_complexity`: 2 for level 1, otherwise `generate.n` = 4; `--n` fixes it for all). It also picks
-  the rationale's step limit (`cot.max_steps_by_complexity`: 4, 5, 6, 8, 10 steps for levels 1–5, about 40 words a
-  step), filled into `{max_steps}` / `{max_words}` in the cot and compress prompts. Unrated prompts get 6 steps.
-  The filter only rejects runaway rationales (over 600 words); the student's 2,048-token budget is the real limit.
-- **Thinking:** vLLM gets `chat_template_kwargs.enable_thinking`; OpenRouter gets `reasoning.enabled`.
-  - vLLM returns reasoning in `reasoning_content`, and its token count comes from the server's `/tokenize` endpoint.
-  - With thinking off, a reply filed under reasoning is moved back to the answer.
-  - Inline `<think>…</think>` is split out.
-- **compress** (variant B) rewrites each finished trace into at most 5 numbered steps that reach the same final
-  answer, with no new facts and no harmful details. Unfinished samples are passed through with an empty rationale, so
-  the filter records why they were dropped.
+- **Complexity sets the effort.** The rating picks the samples per prompt (`generate.n_by_complexity`: 2 for level 1,
+  otherwise 4) and the step limit (`cot.max_steps_by_complexity`: 4, 5, 6, 8, 10 for levels 1–5, 6 when unrated,
+  about 40 words a step). The filter only rejects runaway rationales (over 600 words); the student's budget is the real
+  limit.
+- **Thinking:** vLLM gets `chat_template_kwargs.enable_thinking` and returns the thinking in `reasoning_content`; its
+  token count comes from `/tokenize`. With thinking off, a reply filed under reasoning is moved back to the answer, and
+  inline `<think>…</think>` is split out.
+- **compress** rewrites each finished trace into numbered steps that reach the same answer, with no new facts and no
+  harmful details. Unfinished samples pass through with an empty rationale, so the filter records why they drop.
 - **rate** scores each question 1–5 with the "Reasoning Complexity Rating Prompt" of DeReason (Hu et al. 2026,
-  arXiv:2603.11193, Appendix A.1), at temperature 0. Results go to `data/prepared/<dataset>.complexity.jsonl`.
+  arXiv:2603.11193, Appendix A.1), at temperature 0, into `data/prepared/<dataset>.complexity.jsonl`. A rating without
+  a level is asked again on the next run.
 
 ## Filter reasons
 | reason | rule |
@@ -263,215 +203,110 @@ Requests that fail after all retries go to `<out>.errors.jsonl` and are retried 
 | `missing_answer` | the answer is empty |
 | `malformed_think_tag` | an unclosed `<think>`, or a stray `<think>`/`</think>` in the answer |
 | `finish_not_stop` | `finish_reason != "stop"` |
-| `language_mismatch` | lingua detects a different language in the answer or the rationale than in the prompt (a Thai question with English steps, say). Code blocks are stripped first. The check is skipped for short texts and for prompts that match `language_skip_patterns` (e.g. translation requests) |
-| `repetition` | `1 − unique/total` 8-gram ratio > 0.3 in the answer or rationale, or in the raw reasoning of rows without a rationale (character n-grams for scripts without spaces). A compressed sample's raw trace is not trained on, so it is not checked |
+| `language_mismatch` | the answer or rationale is in another language than expected: Thai on Thai rows (`lang: th`), else lingua's reading of the prompt. Code blocks are stripped first; skipped for short texts and for prompts matching `language_skip_patterns` (e.g. translation requests) |
+| `repetition` | `1 − unique/total` 8-gram ratio > 0.3 in the answer or the rationale (character n-grams for scripts without spaces). The raw thinking is never trained on, so it is not checked |
 | `hint_leakage` | hint mode only: the reasoning, rationale or answer contains a phrase from `leakage_phrases` |
 | `reasoning_too_long` | `reasoning_tokens > --max-reasoning-tokens` |
 | `missing_rationale` | a cot or compressed sample has no rationale |
-| `rationale_too_long` | the rationale has more than `cot.max_words` (600) words. Thai text is split into words by PyThaiNLP (`verify.words`), since Thai puts spaces only between phrases |
-| `over_student_budget` | input + rationale + answer, in the student's tokenizer plus 32 template tokens, exceed `student.max_total_tokens` (2,048; `--max-student-tokens 0` disables). For English rows this is a proxy; the Thai sets are measured in Thai |
+| `rationale_too_long` | the rationale has more than `cot.max_words` (600) words; Thai is split into words by PyThaiNLP |
+| `over_student_budget` | input + rationale + answer in the student's tokenizer, plus 32 template tokens, exceed `student.max_total_tokens` (2,048; `--max-student-tokens 0` disables) |
 
-The filter writes three files: `<out>` (kept rows), `<out stem>.rejected.jsonl` (each rejected row with all its
-reasons) and `<out stem>.rejections.json` (counts).
+The filter writes `<out>` (kept rows), `<out stem>.rejected.jsonl` (each rejected row with its reasons) and
+`<out stem>.rejections.json` (counts).
 
 ## Judging, rules and selection
-- **Judge:** Gemma 4 31B (`google/gemma-4-31B-it-qat-w4a16-ct` on vLLM; `google/gemma-4-31b-it` on OpenRouter),
-  temperature 0, thinking off, JSON output `{critique, score}`.
-  - The rubric (`prompts/judge_v1.txt`) grades both parts. Reasoning: valid, supports the answer, concise, no harmful
+- **Judge:** Gemma 4 31B (`google/gemma-4-31B-it-qat-w4a16-ct`), temperature 0, thinking off, JSON `{critique, score}`.
+  - The rubric (`prompts/judge_v2.txt`) grades both parts. Reasoning: valid, supports the answer, concise, no harmful
     details. Answer: every instruction met, correct, concise, the prompt's language; declines only clearly harmful
-    requests.
-  - The gold or a hint-eligible dataset answer is shown as a possibly imperfect reference.
-  - The rubric, question and reference come first and the graded response last, so the server's prefix cache computes
-    the shared part once per prompt.
-  - Scores run 1–9, so a score is one token. On vLLM, its top logprobs give an `expected_score` that breaks ties.
-- **What gets judged:** every sample of an open prompt. For a closed prompt, only the samples whose final answer
-  passes the rule (`verify.is_correct`: normalized match, or numeric match for number golds). If none pass, all of
-  them go to the judge with the gold as reference, because some golds are right but not exactly matchable.
-  `judge --all` judges every sample, including rule-failing ones.
-- **Validation:** `judge --validate N` judges both responses of HelpSteer2 *validation* prompts whose two responses
-  got different human helpfulness ratings. It appends a row to `reports/judge_validation.md`: agreement, ties, thinking
-  on/off, completion tokens per call, minutes. `--thinking on|off` overrides `judge.thinking` (thinking uses
-  `judge.max_tokens_thinking`). `--prompt-version` picks the rubric. v2, the default, is stricter: v1 gave almost
-  every Qwen sample a 9 in the smoke run. The pilot validates both (`VALIDATE_PROMPTS="v1 v2"`).
-- **Report sections that guide the full run:**
-  - **Best-of-k** per variant: what the first k samples of each prompt would give (mean best score, yield, pass@k), to
-    choose N.
-  - **Judge vs rules** on closed prompts (needs `--all`): mean score of correct vs wrong samples, AUC, and the
-    false-accept rate (wrong samples scoring ≥ min_score).
-  - **Logprob detail**: the share of judge scores whose expected score differs from the integer, which shows that
-    logprobs arrive.
-- **select:**
-  - Open prompts keep their best sample if it scores ≥ `select.min_score` (7).
-  - Closed prompts keep up to `k_closed` (3) distinct rule-passing samples (rationale word-trigram Jaccard ≤ 0.7).
-  - Ties go to the shorter sample.
-  - Output is written in curriculum order: complexity 1 → 5, unrated last, shuffled within each level; or
-    `--order random`.
-  - The raw `reasoning` field is dropped. `<out stem>.select_stats.json` counts kept and dropped prompts and rows per
-    complexity level.
+    requests. The gold or a hint-eligible dataset answer is shown as a possibly imperfect reference.
+  - The rubric, question and reference come first and the graded response last, so the prefix cache computes the
+    shared part once per prompt.
+  - Scores run 1–9, so a score is one token; its top logprobs give an `expected_score` that breaks ties.
+- **What gets judged:** every sample of an open prompt. For a closed prompt, only the samples whose final answer passes
+  the rule (`verify.is_correct`: normalized match, or numeric match for number golds); if none pass, all of them (see
+  Data preparation). `judge --all` judges every sample.
+- **Validation:** `judge --validate N` judges both responses of HelpSteer2 *validation* prompts whose two responses got
+  different human helpfulness ratings, and appends agreement, ties, thinking on/off, tokens per call and minutes to
+  `reports/judge_validation.md`. `--thinking on|off` and `--prompt-version` override the config.
+- **The report** adds best-of-k per variant (to choose N), judge vs rules on closed prompts (needs `--all`), and the
+  share of scores whose logprobs moved the expected score.
+- **select:** open prompts keep their best sample if it scores ≥ `select.min_score` (7); closed prompts keep up to
+  `k_closed` (3) distinct rule-passing samples (rationale trigram Jaccard ≤ 0.7); ties go to the shorter sample. Output
+  is in curriculum order (complexity 1 → 5, unrated last, shuffled within each level) or `--order random`. The raw
+  `reasoning` is dropped; `<out stem>.select_stats.json` counts kept and dropped prompts and rows per level.
 
 ## Thai sets
 About 6k Thai rows are added next to the English ones (about 1:2). The English rows are not translated. Instead,
 **new questions are translated first and then distilled**, so Qwen writes the Thai rationale and answer itself.
-- **Sets:** a Thai set is a dataset named `<source>_th`, with a `translate:` block in `config.yaml` (`from`, `only`,
-  `limit`). `distill build-translated` writes its prepared file, `data/prepared/<source>_th.jsonl`, in the usual
-  schema, so every later stage reads it like any other dataset. `prepare` skips these sets.
-  - The sets are `no_robots_th`, `helpsteer2_th` and `ultrafeedback_th` (open), and `logiqa_th` (closed).
-  - UltraFeedback's closed set is left out: its golds are noisy, its tasks are often about English, and short golds
-    don't translate reliably. Its share goes to LogiQA.
-- **New questions only:** the English run rated every question before generating, so the source's ratings file
-  (`data/prepared/<source>.complexity.jsonl`) lists every id it used. `translate` leaves those out, then takes a
-  seeded stratified sample. A missing ratings file is an error, not a silent reuse of questions.
-- **What is translated:** the prompt, and the dataset's reference answer when the judge would use it (`hint_ok`). The
-  reference only feeds the judge and is never trained on. LogiQA keeps its option letters, and its gold option text is
-  read back from the translated `A.`–`D.` lines.
+- **Sets:** a Thai set is a dataset named `<source>_th` with a `translate:` block in `config.yaml` (`from`, `only`,
+  `limit`): `no_robots_th`, `helpsteer2_th`, `ultrafeedback_th` (open) and `logiqa_th` (closed). UltraFeedback's closed
+  set is left out (noisy golds, English-bound tasks); its share goes to LogiQA. `distill build-translated` writes the
+  prepared file in the usual schema, so every later stage reads it like any other dataset.
+- **New questions only:** the English run rated every question first, so the source's ratings file lists every id it
+  used. `translate` leaves those out, then takes a seeded stratified sample. A missing ratings file is an error.
+- **What is translated:** the prompt, and the reference answer when the judge would use it (`hint_ok`); the reference
+  is never trained on. LogiQA keeps its option letters, and its gold option text is read back from the Thai options.
 - **Checks, before any generation:**
-  - `rule_flags`: `not_stop`, `not_thai` (Thai share below `translate.rules.min_thai_share`), `refusal`,
+  - `rule_flags`: `not_stop`, `not_thai` (Thai share below `translate.rules.min_thai_share`, 0.2), `refusal`,
     `length_ratio`, `numbers_changed`, `code_changed`, `urls_changed`, `options_missing`, `english_task_pattern`
     (`filter.language_skip_patterns`), `repetition`.
-  - `check-translation`: a checker model (`translate.checker`: `judge` = Gemma, or `checker` = Qwen3-32B-AWQ, from
-    outside the Gemma family) answers `english_only` (the task depends on English itself: grammar, rhyme, wordplay,
-    letter counts, translating into another language), `fluency` and `meaning` (1–5), at temperature 0 with a JSON
-    schema. `meaning` comes last, so its logprobs give `meaning_expected`. The judge writes `<stem>.check.jsonl`,
-    another checker `<stem>.check_<role>.jsonl`.
-  - `build-translated` drops a translation with any rule flag, `english_only`, no check, or a meaning score below
-    `translate.min_meaning` (4.0). It writes the prompts sorted by id.
-  - `similarity` (BGE-M3 cosine, extra `qe`) is no longer part of the run: in the comparison it did not tell good
-    translations from bad ones. The command stays for manual use.
-- **Later stages:**
-  - `rate` rates the English original (`input_en`), so the levels match the English rows.
-  - Thai rationales are counted in PyThaiNLP words.
-  - The filter checks the answer and the rationale against Thai on Thai rows (`lang: th`). On other rows it checks
-    them against lingua's reading of the prompt. A Thai prompt full of English names or code can read as English.
-  - `verify` accepts `คำตอบสุดท้าย:` as well as `Final answer:`.
-- **Teacher prompts:** the English ones (`open_v2`, `open_closed_v2`), which ask for the language of the question.
-  - Compress uses `compress_v4` on translated rows (`compress.translated_prompt_version`). That is `compress_v3` word
-    for word, except "Write every step in {language}" (`translate.target`).
-  - Qwen thinks in English, and v3's "the same language as the question" let ~590 of night 1's Thai rationales come
-    out in English.
-  - `compress --redo-wrong-language` (or `REDO_LANGUAGE=1` for the scripts) first drops translated rows whose
-    rationale is in another language, so they are compressed again.
+  - `check-translation`: the checker (`translate.checker`, Gemma) answers `english_only` (the task depends on English
+    itself: grammar, rhyme, wordplay, letter counts, translating into another language), `fluency` and `meaning`
+    (1–5), at temperature 0 with a JSON schema. `meaning` comes last, so its logprobs give `meaning_expected`.
+  - `build-translated` drops a translation with any rule flag, `english_only`, no check, or `meaning_expected` below
+    `translate.min_meaning` (4.0), and writes the prompts sorted by id. A configured gate (`translate.gates`) flags a
+    row instead (`translation.gate_failed`), so the seeded sample stays the same; none is in use.
+- **Later stages:** `rate` rates the English original; the filter expects Thai on Thai rows; `verify` accepts
+  `คำตอบสุดท้าย:` as well as `Final answer:`. The teacher keeps its English prompts, which ask for the question's
+  language; `compress_v4` (on Thai rows) says "Write every step in Thai", because Qwen thinks in English and v3 let
+  ~590 of night 1's rationales come out in English. `compress --redo-wrong-language` (`REDO_LANGUAGE=1`) redoes them.
 
-**Translator comparison** (once, before the Thai run): the first `translate.compare_limit` (13) prompts of each set,
-translated by Qwen (teacher), Gemma (judge) and Typhoon Translate 1.5 (role `typhoon`; comparison only). That makes
-52 prompts and 156 translations. It ran on 2026-10-31; [reports/translate_compare.md](reports/translate_compare.md)
-has the results. Gemma won, and its meaning check worked (AUC 0.79); similarity did not.
-```bash
-tmux new -s compare 'bash scripts/translate_compare.sh 2>&1 | tee -ai logs/compare.log'   # ~30 min of GPU
-# Grade reports/translate_compare.xlsx by hand: meaning and fluency 1-5 (sheet "how to grade"). Model names are
-# hidden; reports/translate_compare_key.json maps the rows back. Then, on CPU:
-distill compare-report reports/translate_compare.xlsx      # -> reports/translate_compare.md
-```
-The report shows each translator's grades and how well each automatic signal agrees with them: Spearman, AUC,
-threshold tables, rule flags, the judge's self-preference. A partly graded sheet works: only filled cells count, and
-unreadable ones (not a whole number from 1 to 5) are listed and skipped. Translators are compared only on prompts
-whose three translations all have a meaning grade, so grade a prompt's rows together; the signals use every graded
-row. A translation with no Thai letters is an untranslated copy and counts as meaning 1, as the guide's scale says.
-Set `translate.translator`, `checker` and `min_meaning` from it.
-
-**A second translator comparison** (~20 min of GPU, `scripts/translate_compare2.sh`) tests dedicated translation
-models against Gemma.
-- **Models:** Seed-X-PPO-7B, MADLAD-400 10B and NLLB-200 3.3B. They are config roles with an `hf:` block.
-- **How they run:** none is a chat model, so they run in-process with transformers instead of vLLM. A prompt is
-  split into lines and sentences of at most `max_chars` (`translate.split_for_mt`). Code blocks, option labels and
-  list markers stay as they are. The pieces are translated in batches, and the prompt is put back together.
-- **Pool:** `distill compare-pick --per-set 10` takes 40 questions the Thai run hasn't distilled, with the
-  translations and checks Gemma already made. Failed translations are included.
-- **Translation:** `distill compare-translate --role seedx|madlad|nllb` translates the same questions, with each
-  model loading once.
-- **Grading:** the judge checks the new translations, and a 160-row sheet goes to `reports/translate_compare2.xlsx`.
-  `compare-report` reads it as before.
-- **Outcome:** the user chose Gemma without grading the sheet. Gemma kept unmarked code that the sentence-level models
-  mangled, and the three models were deleted from the VM.
-
-**A checker from another family** (~10 min of GPU, before the Thai run): `scripts/second_checker.sh` has the
-`checker` role score the same 156 translations. The report then puts each checker beside the hand grades, with its
-lean on each translator, which shows whether it favours its own family. If it agrees with the grades at least as
-well as Gemma, `translate.checker: checker` makes it check Gemma's translations in the Thai run.
-
-**Checker comparison** (~25 min of GPU, mostly model loads, `scripts/checker_compare.sh`): more checkers against the
-judge, as a possible second gate.
-- **Candidates:**
-  - `metricx`: MetricX-24 XXL. A translation-quality metric (QE, no reference translation): an error score from 0 to
-    25.
-  - `cometkiwi`: CometKiwi XL, a score from 0 to 1. It is gated, and the project couldn't get access, so it isn't in
-    the script's default `CHECKERS`; the role stays. It runs from `.venv-comet`, because `unbabel-comet` needs
-    numpy 1 and transformers 4. comet imports `pkg_resources`, so
-    it needs setuptools. Its torch is pinned to the build vLLM's venv uses, since the driver supports CUDA 13.0:
-    ```bash
-    uv venv .venv-comet --python 3.12 && uv pip install --python .venv-comet -e . "unbabel-comet>=2.2" "setuptools<81"
-    uv pip install --python .venv-comet "torch==2.13.0" --index-url https://download.pytorch.org/whl/cu130
-    ```
-  - `typhoon25`: Typhoon 2.5 30B-A3B behind vLLM with the judge's check prompt. vLLM quantizes it to FP8 while
-    loading.
-- **How the metrics run:**
-  - The two metrics are `metric:` roles, run in-process. Each check stores `quality` (higher is better: MetricX's
-    error negated, CometKiwi's score), `raw`, `pieces` and `truncated`.
-  - A pair longer than the model's input is read as aligned paragraphs, or lines, and the worst piece decides
-    (`translate.aligned_pieces`).
-- **What gets scored:**
-  - The candidates score G1's 156 graded translations, and `compare-report` adds them to
-    `reports/translate_compare.md` with AUCs.
-  - Scoring all 5,850 of night 1's translations would take too long (the user's call), so they also score a seeded
-    sample (`distill checker-sample --per-set 300`, into `data/checker_compare/sample/`). The sample holds
-    translations a gate would act on: no rule flag, and not called English-only by the judge.
-- **The pool** (`distill checker-pick --from data/checker_compare/sample`):
-  - The judge rejects sampled translations under `min_meaning`, about 2.7%. Each candidate rejects as many, its
-    lowest-scored.
-  - About 80 rows are drawn: 15 that only a given candidate rejects, 15 that only the judge rejects, and 20 that all
-    pass. They go to `data/checker_compare/` and to the sheet `reports/checker_compare.xlsx`, one translation per row
-    and blind.
-- **Decision** (`distill checker-report reports/checker_compare.xlsx`):
-  - A candidate becomes a second gate if at least half of the rows only it rejects are graded bad (meaning ≤ 3), and
-    clearly more than the baseline (one-sided Fisher p < 0.05).
-  - Its threshold goes to `translate.gates`. It scored only the sample, so it then scores every translation in
-    `data/translate` (an unscored translation fails the gate), and `distill build-translated` runs for each Thai set.
-  - A row that fails a gate keeps its place, flagged `translation.gate_failed`. `select_rows` skips it after
-    sampling, and `select` drops its samples. Dropping it from the file would reshuffle the seeded sample.
-
-**Thai run:**
 ```bash
 distill translate --dataset logiqa_th --dry-run            # pool left after excluding the English ids; no server
 tmux new -s thai 'LIMIT=500 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'    # night 1: prep + 500 per set
-# night 2: every remaining open prompt, LogiQA up to 1,200 (~2,700 rows), and night 1's English rationales redone
+# night 2: every remaining open prompt, LogiQA up to 1,200, and night 1's English rationales redone
 tmux new -s thai 'REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'
 ```
-`LIMIT_CLOSED` caps the closed set (LogiQA) separately. LogiQA gives about 2.3 rows per prompt, because a closed
-prompt keeps up to 3 distinct correct samples.
-- **Prep** runs once, for each set without a prepared file: translate (translate.translator), check
-  (translate.checker), build, and a backup of `data/translate`. The prompt pool then stays fixed.
-- **Distillation** runs `pipeline.sh` on `LIMIT` prompts per Thai set (variant B, `OUT=data/full_th`).
-  - The sampler is nested, so a later run with a larger `LIMIT` only adds prompts, and `LIMIT=0` takes the rest.
-  - Each run ends with final rows for every prompt done so far, on the Hub.
-  - With a `LIMIT` or `LIMIT_CLOSED`, each model loads once per run (`BY_SET=0`). An unlimited run goes set by set
-    (`BY_SET=1`), so a cut still leaves finished sets.
-- **Timing (night 1's measurements):**
-  - Each prompt takes 4.2–4.6 s in an open set and 7.2 s in LogiQA (generate + compress + judge). Thai costs no
-    more than English.
-  - Each run adds about 10 min for model loads.
-  - Prep took 86 min on the first night.
-- **Resume:** everything resumes, so a run cut by the stopper continues on the next run with the same or a higher
-  `LIMIT`.
+- **Prep** runs once, for each set without a prepared file: translate, check, build, and a backup of `data/translate`.
+  The prompt pool then stays fixed.
+- **Distillation** runs `pipeline.sh` on `LIMIT` prompts per Thai set (variant B, `OUT=data/full_th`). The sampler is
+  nested, so a larger `LIMIT` only adds prompts and `LIMIT=0` takes the rest. With a limit each model loads once per
+  run (`BY_SET=0`); an unlimited run goes set by set.
+- **Timing (night 1):** 4.2–4.6 s per prompt in an open set and 7.2 s in LogiQA (generate + compress + judge), plus
+  ~10 min of model loads per run; prep took 86 min. LogiQA gives about 2.3 rows per prompt (up to 3 correct samples).
 
 Single steps:
 ```bash
-distill translate --dataset no_robots_th --translator teacher [--limit 13 --no-reference --out FILE]
-distill check-translation data/translate/no_robots_th.jsonl      # translate.checker's server; or --role checker
-distill similarity data/translate/no_robots_th.jsonl             # manual only; no server up; -> .similarity.jsonl
+distill translate --dataset no_robots_th [--translator teacher --limit 13 --no-reference --out FILE]
+distill check-translation data/translate/no_robots_th.jsonl      # the judge's server; --role for another checker
 distill build-translated --dataset no_robots_th                  # -> data/prepared/no_robots_th.jsonl
-distill compare-sheet FILE... --out reports/translate_compare.xlsx
-distill check-translation --role metricx FILE...                 # in-process; .venv-comet/bin/distill for cometkiwi
-distill checker-sample --per-set 300 --out-dir data/checker_compare/sample
-distill checker-pick --roles metricx cometkiwi typhoon25 --from data/checker_compare/sample --out-dir data/checker_compare
-distill checker-report reports/checker_compare.xlsx              # -> reports/checker_compare.md
 ```
 
 **Translation record** (`data/translate/<set>.jsonl`): `id` (the English prompt's id), `dataset`, `source_dataset`,
 `input_en`, `input` (Thai), `finish_reason`, `reference_en`, `reference` (Thai, or null), `strata`, `closed`, `gold`
 (English), `hint_ok`, `translator` (`model`, `role`, `prompt_version`, `prompt_hash`, `sampling`), `tokens`,
-`rule_flags`. **Check:** `id`, `english_only`, `fluency`, `meaning`, `meaning_expected`, `critique`, `judge_model`,
-`check_prompt_hash`. **Metric check:** `id`, `quality`, `raw`, `pieces`, `truncated`, `judge_model`. **Similarity:**
-`id`, `similarity`, `embed_model`. The Thai prepared row adds `lang`, `input_en` and `translation` to the usual
-fields, and final rows carry them on.
+`rule_flags`. **Check** (`<stem>.check.jsonl`): `id`, `english_only`, `fluency`, `meaning`, `meaning_expected`,
+`critique`, `judge_model`, `check_prompt_hash`; another checker writes `<stem>.check_<role>.jsonl`. The Thai prepared
+row adds `lang`, `input_en` and `translation` to the usual fields, and final rows carry them on.
+
+## Experiments
+The comparisons behind the Thai decisions stay runnable, for the project report. Results and decisions:
+[docs/experiments.md](docs/experiments.md).
+- **Translator comparisons:** `scripts/translate_compare.sh` (Qwen, Gemma and Typhoon Translate; G1) and
+  `scripts/translate_compare2.sh` (Seed-X, MADLAD and NLLB as `hf:` roles in `inproc.py`, which split prompts into
+  sentence-sized pieces and keep code blocks, option labels and list markers). `distill compare-sheet` writes a blind
+  grading sheet with its key; `distill compare-report` reads the graded sheet (partly graded is fine; untranslated
+  copies count as meaning 1) and reports each translator and how well each automatic signal agrees with the grades.
+- **Checker comparisons:** `scripts/second_checker.sh` (Qwen3-32B) and `scripts/checker_compare.sh` (MetricX-24 and
+  CometKiwi as in-process `metric:` roles, Typhoon 2.5 behind vLLM). A metric check stores `quality` (higher is
+  better), `raw`, `pieces` and `truncated`; a pair longer than the model's input is read in aligned paragraphs or lines,
+  and the worst piece decides. `distill checker-sample`, `checker-pick` and `checker-report` build the disagreement pool
+  and apply the decision rule. CometKiwi is gated and needs its own venv:
+  ```bash
+  uv venv .venv-comet --python 3.12 && uv pip install --python .venv-comet -e . "unbabel-comet>=2.2" "setuptools<81"
+  uv pip install --python .venv-comet "torch==2.13.0" --index-url https://download.pytorch.org/whl/cu130
+  ```
+- `distill similarity` (BGE-M3 cosine, extra `qe`) was ruled out by G1 and is manual only.
 
 ## Output schemas (one JSON object per line)
 **Generated sample** (`generate`, then `compress` adds `rationale`, `cot_method`, `compress_model`, `compress_prompt_hash`):
@@ -479,16 +314,15 @@ fields, and final rows carry them on.
 | field | description |
 |---|---|
 | `id`, `sample_idx` | hash of the normalized prompt (stable across runs); sample number 0..N-1 |
-| `source_dataset` | `no_robots` / `helpsteer2` / `ultrafeedback` |
+| `source_dataset` | `no_robots` / `helpsteer2` / `ultrafeedback` / `logiqa`, or a Thai set |
 | `input` | the user prompt sent to the teacher (never contains the hint) |
 | `closed`, `gold` | closed-ended flag; gold answers (closed prompts only) |
 | `reasoning` | raw teacher thinking (empty when thinking is off); analysis only |
-| `rationale` | short numbered reasoning, one step per paragraph with steps separated by a blank line (`\n\n`; `verify.format_steps`), the training target together with `answer` |
+| `rationale` | short numbered reasoning, one step per paragraph separated by a blank line (`verify.format_steps`); the training target together with `answer` |
 | `answer` | teacher final answer, with think and reasoning tags removed |
 | `finish_reason` | `stop`, `length`, … |
 | `prompt_tokens`, `reasoning_tokens`, `answer_tokens` | `answer_tokens = completion_tokens − reasoning_tokens` |
 | `think_unclosed` | true when the answer started a `<think>` that never closed |
-| `provider`, `cost` | `local-vllm` and 0 locally; the upstream provider and USD cost on OpenRouter |
 | `cot_method` | `prompted` (A), `compressed` (B) or null |
 | `model`, `mode`, `thinking` | teacher ID, `open`/`cot`/`hint`, bool |
 | `prompt_version`, `prompt_hash` | template version and first 16 hex characters of its sha256 |
@@ -510,11 +344,11 @@ fields, and final rows carry them on.
 | `complexity`, `max_steps`, `n_steps` | DeReason rating 1–5 (curriculum order), the step limit it gave, and the steps actually written |
 | `student_tokens` | `input`, `rationale`, `answer` and `total` in the **student's** tokenizer; total adds 32 chat-template tokens and must stay ≤ 2,048 |
 | `selection` | `method` (rule+judge or judge), the judge's `score` / `expected_score`, `n_candidates`, `n_passing` |
-| `teacher` | how Qwen made it: `model`, `mode`, `thinking`, `cot_method`, prompt versions/hashes, `sampling`, `seed`, `timestamp`. `max_tokens` is the **teacher's** generation cap, not the student's. `thinking_tokens` is the raw thinking (variant B), which is not in this file. `reply_tokens` is the visible reply in Qwen's tokens (for A it includes the rationale) |
-| `lang`, `input_en`, `translation` | Thai rows only: `th`, the English original of `input`, and the translation's `model`, judge `meaning` (expected, 1–5), `fluency` and embedding `similarity` |
+| `teacher` | how Qwen made it: `model`, `mode`, `thinking`, `cot_method`, prompt versions/hashes, `sampling`, `seed`, `timestamp`. `max_tokens` is the **teacher's** generation cap. `thinking_tokens` is the raw thinking (variant B), not in this file. `reply_tokens` is the visible reply in Qwen's tokens |
+| `lang`, `input_en`, `translation` | Thai rows only: `th`, the English original of `input`, and the translation's `model`, `checker`, `meaning` (expected, 1–5), `fluency` and `similarity` (null: not used) |
 
-Raw thinking and per-call bookkeeping (`finish_reason`, `cost`, …) stay in the generation and kept files.
+Raw thinking and per-call bookkeeping stay in the generation and kept files.
 
 ## Licensing
-See [docs/LICENSES.md](docs/LICENSES.md). **Everything derived from No Robots is non-commercial (CC BY-NC 4.0).**
-`samples/` holds a small pilot sample, and generated data is otherwise not committed.
+See [docs/LICENSES.md](docs/LICENSES.md). **Everything derived from No Robots is non-commercial (CC BY-NC 4.0)**, and
+LogiQA 2.0 is CC BY-NC-SA 4.0. Generated data is not committed; it lives on the VM and in the private Hub repo.

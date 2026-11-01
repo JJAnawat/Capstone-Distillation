@@ -2,7 +2,6 @@
 import hashlib
 import json
 import re
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,11 +40,11 @@ def parse_response(j, thinking=True, cot=False):
     choice = j["choices"][0]
     msg = choice["message"]
     content = msg.get("content") or ""
-    reasoning = msg.get("reasoning") or msg.get("reasoning_content") or ""  # OpenRouter / vLLM
+    reasoning = msg.get("reasoning_content") or ""
     if not thinking and not content.strip():  # vLLM's reasoning parser can file a thinking-off reply as reasoning
         content, reasoning = reasoning, ""
     think_unclosed = False
-    # Fallback for providers that leave <think>...</think> inline in content.
+    # Fallback for a server without a reasoning parser, which leaves <think>...</think> inline in content.
     m = re.search(r"<think>(.*?)</think>", content, re.S)
     if m:
         reasoning = reasoning or m.group(1)
@@ -65,7 +64,7 @@ def parse_response(j, thinking=True, cot=False):
     return {"reasoning": reasoning.strip(), "rationale": rationale, "answer": content.strip(),
             "finish_reason": choice.get("finish_reason"), "prompt_tokens": usage.get("prompt_tokens", 0),
             "reasoning_tokens": reasoning_tokens, "answer_tokens": completion - reasoning_tokens,
-            "think_unclosed": think_unclosed, "provider": j.get("provider"), "cost": usage.get("cost")}
+            "think_unclosed": think_unclosed}
 
 
 def count_tokens(client, ep, text):
@@ -85,13 +84,12 @@ def read_done_keys(path):
 
 
 def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tokens=None, out=None, n=None,
-        concurrency=None, max_cost=None, include_reference=False, model=None, prompt_version=None, only=None,
-        backend=None, client=None):
+        concurrency=None, include_reference=False, model=None, prompt_version=None, only=None, client=None):
     if mode == "cot" and thinking:
         raise ValueError("--mode cot asks for a short <reasoning> section and needs --thinking off; "
                          "thinking-on output gets its short rationale from `distill compress`")
     g = cfg["generate"]
-    ep = server.endpoint(cfg, "teacher", backend)
+    ep = server.endpoint(cfg, "teacher")
     ep["model"] = model or ep["model"]
     seed = g["seed"] if seed is None else seed
     max_tokens = max_tokens or (cfg["cot"]["max_tokens"] if mode == "cot" else g["max_tokens"])
@@ -108,18 +106,13 @@ def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tok
     planned = sum(map(n_for, rows))
     print(f"[generate] {dataset} mode={mode} thinking={thinking} n={n or 'by complexity'}: {len(rows)} prompts, "
           f"{planned} samples, {planned - len(todo)} already done, {len(todo)} to run")
-    state = {"spent": 0.0, "ok": 0, "failed": 0}
     if not todo:
-        return state
+        return {"ok": 0, "failed": 0}
     concurrency = concurrency or ep["concurrency"]
     client = client or server.make_client(ep, concurrency)
-    price = ep.get("price_per_mtok")
-    lock, stop = threading.Lock(), threading.Event()
 
     def work(item):
         r, k = item
-        if stop.is_set():
-            return None
         system, user, prompt_hash = closed_tmpl if r.get("closed") else open_tmpl
         max_steps, max_words = step_limit(cfg, levels.get(r["id"]))
         kw = {"prompt": r["input"], "reference": r["reference"], "max_steps": max_steps, "max_words": max_words}
@@ -127,14 +120,9 @@ def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tok
         s = sample_seed(seed, r["id"], k)
         body = server.build_body(ep, messages, sampling, thinking, s, max_tokens)
         p = parse_response(server.call_api(client, body, g["max_retries"]), thinking, cot=mode == "cot")
-        if ep["backend"] == "vllm":
-            p["provider"] = "local-vllm"
-            if p["reasoning"] and not p["reasoning_tokens"]:
-                p["reasoning_tokens"] = count_tokens(client, ep, p["reasoning"])
-                p["answer_tokens"] = max(0, p["answer_tokens"] - p["reasoning_tokens"])
-        if p["cost"] is None:
-            p["cost"] = (p["prompt_tokens"] * price["prompt"]
-                         + (p["reasoning_tokens"] + p["answer_tokens"]) * price["completion"]) / 1e6 if price else 0.0
+        if p["reasoning"] and not p["reasoning_tokens"]:
+            p["reasoning_tokens"] = count_tokens(client, ep, p["reasoning"])
+            p["answer_tokens"] = max(0, p["answer_tokens"] - p["reasoning_tokens"])
         rec = {"id": r["id"], "sample_idx": k, "source_dataset": dataset, "input": r["input"],
                **{f: r[f] for f in ("lang", "input_en", "translation") if r.get(f)},  # Thai sets: carried to final rows
                "closed": bool(r.get("closed")), **({"gold": r["gold"]} if r.get("closed") else {}), **p,
@@ -145,17 +133,10 @@ def run(cfg, dataset, mode="open", thinking=True, limit=None, seed=None, max_tok
                "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         if include_reference:
             rec["reference_response"] = r["reference"]
-        with lock:
-            state["spent"] += p["cost"]
-            if max_cost and state["spent"] >= max_cost and not stop.is_set():
-                print(f"[generate] budget ${max_cost} reached; finishing in-flight requests and stopping")
-                stop.set()
         return rec, p["reasoning_tokens"] + p["answer_tokens"]
 
     summary = server.run_pool("generate", work, todo, out, concurrency,
                               lambda item: {"id": item[0]["id"], "sample_idx": item[1]}, dataset=dataset, mode=mode,
-                              thinking=thinking, n=n or "by complexity", backend=ep["backend"], model=ep["model"])
-    state["ok"], state["failed"] = summary["done"], summary["failed"]
-    print(f"[generate] done: {state['ok']} written, {state['failed']} failed, spent ${state['spent']:.4f}, "
-          f"{summary['tok_per_s']:,.0f} tok/s")
-    return state
+                              thinking=thinking, n=n or "by complexity", model=ep["model"])
+    print(f"[generate] done: {summary['done']} written, {summary['failed']} failed, {summary['tok_per_s']:,.0f} tok/s")
+    return {"ok": summary["done"], "failed": summary["failed"]}

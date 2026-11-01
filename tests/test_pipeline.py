@@ -26,69 +26,27 @@ def row(**kw):
 
 # ---------------------------------------------------------------- parsing
 
-def test_parse_reasoning_field():
-    p = generate.parse_response(completion("\n\n391", reasoning="17*23=391", reasoning_tokens=40))
-    assert p["reasoning"] == "17*23=391" and p["answer"] == "391"
-    assert p["reasoning_tokens"] == 40 and p["answer_tokens"] == 10 and p["cost"] == 0.001
-
-
-def test_parse_reasoning_content_field():  # vLLM's name for the reasoning field
-    j = completion("391")
-    j["choices"][0]["message"] = {"content": "391", "reasoning_content": "17*23=391"}
-    p = generate.parse_response(j)
-    assert p["reasoning"] == "17*23=391" and p["answer"] == "391"
-
-
-def test_parse_thinking_off_reply_filed_as_reasoning():
-    p = generate.parse_response(completion("", reasoning="Hello there."), thinking=False)
-    assert p["answer"] == "Hello there." and p["reasoning"] == ""
-
-
-def test_parse_inline_think():
-    p = generate.parse_response(completion("<think>step one</think>\n\nFinal: 4"))
-    assert p["reasoning"] == "step one" and p["answer"] == "Final: 4" and not p["think_unclosed"]
-
-
-def test_parse_closing_tag_only():
-    p = generate.parse_response(completion("step one\n</think>\nFinal: 4"))
-    assert p["reasoning"] == "step one" and p["answer"] == "Final: 4"
-
-
-def test_parse_unclosed_think():
-    p = generate.parse_response(completion("<think>still thinking...", finish="length"))
-    assert p["think_unclosed"] and p["answer"] == "" and p["reasoning"] == "still thinking..."
-
-
-def test_parse_missing_usage():
-    j = completion("hi")
-    del j["usage"]
-    p = generate.parse_response(j)
-    assert p["prompt_tokens"] == 0 and p["cost"] is None
-
-
-def test_parse_cot_rationale():
-    p = generate.parse_response(completion("<reasoning>1. A.\n2. B.</reasoning>\n\nThe answer is B."),
-                                thinking=False, cot=True)
-    assert p["rationale"] == "1. A.\n\n2. B." and p["answer"] == "The answer is B."  # steps separated by a blank line
-
-
-def test_parse_cot_without_tags_has_empty_rationale():
-    p = generate.parse_response(completion("Just an answer."), thinking=False, cot=True)
-    assert p["rationale"] == "" and p["answer"] == "Just an answer."
+@pytest.mark.parametrize("reply, kw, expected", [
+    (completion("\n\n391", reasoning="17*23=391", reasoning_tokens=40), {},
+     {"reasoning": "17*23=391", "answer": "391", "reasoning_tokens": 40, "answer_tokens": 10}),
+    (completion("", reasoning="Hello there."), {"thinking": False},  # vLLM's parser filed a thinking-off reply
+     {"answer": "Hello there.", "reasoning": ""}),
+    (completion("<think>step one</think>\n\nFinal: 4"), {},
+     {"reasoning": "step one", "answer": "Final: 4", "think_unclosed": False}),
+    (completion("step one\n</think>\nFinal: 4"), {}, {"reasoning": "step one", "answer": "Final: 4"}),  # tag in template
+    (completion("<think>still thinking...", finish="length"), {},
+     {"think_unclosed": True, "answer": "", "reasoning": "still thinking..."}),
+    ({"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]}, {}, {"answer": "hi", "prompt_tokens": 0}),
+    (completion("<reasoning>1. A.\n2. B.</reasoning>\n\nThe answer is B."), {"thinking": False, "cot": True},
+     {"rationale": "1. A.\n\n2. B.", "answer": "The answer is B."}),  # steps separated by a blank line
+    (completion("Just an answer."), {"thinking": False, "cot": True}, {"rationale": "", "answer": "Just an answer."}),
+])
+def test_parse_response(reply, kw, expected):
+    p = generate.parse_response(reply, **kw)
+    assert {k: p[k] for k in expected} == expected
 
 
 # ---------------------------------------------------------------- request bodies and server plumbing
-
-def test_build_body_backends():
-    msgs, sampling = [{"role": "user", "content": "hi"}], CFG["sampling"]["thinking_off"]
-    v = server.build_body(server.endpoint(CFG, "teacher", "vllm"), msgs, sampling, False, 7, 100)
-    assert v["chat_template_kwargs"] == {"enable_thinking": False} and "provider" not in v and "reasoning" not in v
-    assert {k: v[k] for k in sampling} == sampling and v["seed"] == 7 and v["max_tokens"] == 100
-    o = server.build_body(server.endpoint(CFG, "teacher", "openrouter"), msgs, sampling, True, 7, 100)
-    assert o["reasoning"] == {"enabled": True} and o["provider"] and "chat_template_kwargs" not in o
-    assert "min_p" not in o and "repetition_penalty" not in o and o["top_k"] == 20  # neutral values left out
-    assert server.endpoint(CFG, "judge", "openrouter")["api_base"] == CFG["openrouter_api_base"]
-
 
 def test_sampling_profiles_send_every_card_field():
     for profile in CFG["sampling"].values():
@@ -228,7 +186,7 @@ def test_filter_accepts_clean_row():
     ({"finish_reason": "length"}, "finish_not_stop"),
     ({"answer": "La capitale de la France est Paris, qui est son centre politique depuis des siècles."},
      "language_mismatch"),
-    ({"reasoning": "wait let me check the answer again. " * 40}, "repetition"),
+    ({"answer": "wait let me check the answer again. " * 40}, "repetition"),
     ({"mode": "hint", "reasoning": "The provided answer says Paris."}, "hint_leakage"),
     ({"reasoning_tokens": 5000}, "reasoning_too_long"),
 ])
@@ -236,15 +194,13 @@ def test_filter_rejects(overrides, reason):
     assert reason in report.rejection_reasons(row(**overrides), FCFG, max_reasoning_tokens=4000)
 
 
-def test_language_check_skipped_for_language_identification():
-    r = row(input="Верхнерейнская низменность Which language is this?", answer="This text is written in Russian.")
-    assert "language_mismatch" not in report.rejection_reasons(r, FCFG)
-
-
-def test_language_check_skipped_for_translation_prompts():
-    r = row(input="Translate this sentence into French: the capital of France is Paris.",
-            answer="La capitale de la France est Paris, qui est son centre politique depuis des siècles.")
-    assert "language_mismatch" not in report.rejection_reasons(r, FCFG)
+@pytest.mark.parametrize("prompt, answer", [
+    ("Верхнерейнская низменность Which language is this?", "This text is written in Russian."),
+    ("Translate this sentence into French: the capital of France is Paris.",
+     "La capitale de la France est Paris, qui est son centre politique depuis des siècles."),
+])
+def test_language_check_skipped_for_language_tasks(prompt, answer):
+    assert "language_mismatch" not in report.rejection_reasons(row(input=prompt, answer=answer), FCFG)
 
 
 def test_filter_rationale_and_student_budget(monkeypatch):
@@ -256,7 +212,7 @@ def test_filter_rationale_and_student_budget(monkeypatch):
     assert "rationale_too_long" in report.rejection_reasons({**base, "rationale": "word " * 200}, FCFG, **limits)
     assert "over_student_budget" in report.rejection_reasons({**base, "answer": base["answer"] + " huge"}, FCFG,
                                                              **limits)
-    # A looping raw trace does not matter once a short rationale replaces it.
+    # A looping raw trace does not matter: it is never trained on.
     looping = {**base, "cot_method": "compressed", "reasoning": "wait let me check the answer again. " * 40}
     assert report.rejection_reasons(looping, FCFG, **limits) == []
 
@@ -403,11 +359,11 @@ def test_vllm_body_and_record_fields(tmp_path, monkeypatch):
     bodies = []
     generate.run(CFG, "no_robots", n=1, out=tmp_path / "v.jsonl", client=fake_client(bodies))
     sampling = CFG["sampling"]["thinking_on"]
-    assert {k: bodies[0][k] for k in sampling} == sampling
-    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": True} and "provider" not in bodies[0]
+    assert {k: bodies[0][k] for k in sampling} == sampling and bodies[0]["max_tokens"] == CFG["generate"]["max_tokens"]
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": True}
     rec = report.read_jsonl(tmp_path / "v.jsonl")[0]
-    assert rec["provider"] == "local-vllm" and rec["min_p"] == 0.0 and rec["sample_idx"] == 0
-    assert rec["seed"] == generate.sample_seed(CFG["generate"]["seed"], "p0", 0)
+    assert rec["min_p"] == 0.0 and rec["sample_idx"] == 0
+    assert rec["seed"] == bodies[0]["seed"] == generate.sample_seed(CFG["generate"]["seed"], "p0", 0)
 
 
 def test_closed_prompts_get_final_answer_template(tmp_path, monkeypatch):
@@ -468,11 +424,3 @@ def test_hint_reaches_teacher_but_not_stored_input(tmp_path, monkeypatch):
     rec = report.read_jsonl(out)[0]
     assert rec["input"] == "Question 0?" and "SECRET-REF" not in json.dumps(rec)
     assert rec["mode"] == "hint" and len(rec["prompt_hash"]) == 16
-
-
-def test_budget_stops_dispatch(tmp_path, monkeypatch):
-    monkeypatch.setattr(data, "load_prompts", lambda cfg, name: PROMPTS)
-    bodies = []
-    state = generate.run(CFG, "no_robots", n=1, out=tmp_path / "b.jsonl", client=fake_client(bodies),
-                         concurrency=1, max_cost=0.0015, backend="openrouter")
-    assert state["ok"] == 2  # each call costs 0.001; stops after crossing 0.0015

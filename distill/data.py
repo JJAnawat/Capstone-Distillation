@@ -162,12 +162,7 @@ def load_prompts(cfg, name):
         raise FileNotFoundError(f"{path} is missing: run `distill prepare` (every dataset) or "
                                 f"`distill prepare --dataset {name}` (one added at the end of the config)")
     with open(path, encoding="utf-8") as f:
-        rows = [json.loads(line) for line in f]
-    if rows and "closed" not in rows[0]:
-        print(f"[data] {path} predates gold answers; treating every prompt as open. Re-run `distill prepare`.")
-        for r in rows:
-            r.update(gold=[], closed=False)
-    return rows
+        return [json.loads(line) for line in f]
 
 
 def subsets(cfg, name):
