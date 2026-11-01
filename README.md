@@ -394,8 +394,12 @@ judge, as a possible second gate.
   - `metricx`: MetricX-24 XXL. A translation-quality metric (QE, no reference translation): an error score from 0 to
     25.
   - `cometkiwi`: CometKiwi XL, a score from 0 to 1. It is gated, so accept its terms on Hugging Face first. It runs
-    from `.venv-comet`, whose `unbabel-comet` pins its own numpy and torch:
-    `uv venv .venv-comet --python 3.12 && uv pip install --python .venv-comet -e . "unbabel-comet>=2.2"`.
+    from `.venv-comet`, because `unbabel-comet` needs numpy 1 and transformers 4. comet imports `pkg_resources`, so
+    it needs setuptools. Its torch is pinned to the build vLLM's venv uses, since the driver supports CUDA 13.0:
+    ```bash
+    uv venv .venv-comet --python 3.12 && uv pip install --python .venv-comet -e . "unbabel-comet>=2.2" "setuptools<81"
+    uv pip install --python .venv-comet "torch==2.13.0" --index-url https://download.pytorch.org/whl/cu130
+    ```
   - `typhoon25`: Typhoon 2.5 30B-A3B behind vLLM with the judge's check prompt. vLLM quantizes it to FP8 while
     loading.
 - **How the metrics run:**

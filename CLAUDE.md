@@ -222,6 +222,22 @@ Thai sets first run translate → check-translation → similarity → build-tra
       - **If a gate is adopted:** it scores all of `data/translate` first (~15 min of GPU; unscored counts as
         failed), then `build-translated` runs per set.
       - **Night 2 waits for this decision** (the user's choice).
+      - **VM setup (2026-11-01, CPU only):**
+        - **Disk:** NLLB, MADLAD and Seed-X are deleted: 21 blobs, 70.3 GiB. This cache keeps its files in a
+          shared `~/hf/hub/blobs/<prefix>/<sha256>`, so deleting a model's folder frees nothing; delete only the
+          blobs no kept model links to.
+        - **Downloaded:** MetricX XXL bf16 (24.1 GiB, `.bin` shards), Typhoon 2.5 (56.9 GiB), and the
+          tokenizer files of mt5-xl and xlm-roberta-xl. `~/hf` is 121G.
+        - **MetricX on CPU** (our `load_metric`): faithful 1.08, negation flipped 15.19, untranslated copy 25.0.
+          It loads in 46 s. Running the repo's own class was refused (code from outside the project), so there
+          is no score-for-score comparison.
+        - **Typhoon 2.5's chat template has no thinking mode:** the prompt ends in a plain assistant turn.
+          vLLM 0.32 has a Marlin FP8 MoE backend for Ampere; only the GPU load can confirm it.
+        - **`.venv-comet`:** comet 2.2.7, numpy 1.26, transformers 4.57.
+          - comet imports `pkg_resources`, so it needs `setuptools<81`.
+          - uv pulled torch 2.15+cu132, but the driver (580) supports CUDA 13.0, so torch is pinned to
+            2.13.0+cu130, vLLM's build.
+        - **CometKiwi XL is still gated** for the VM's token (403): it waits for the user to accept its terms.
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
