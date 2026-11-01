@@ -186,7 +186,18 @@ Thai sets first run translate → check-translation → similarity → build-tra
         - Seed-X ships a bare `tokenizer.json`, so under transformers 5 it has no bos, eos or pad.
           `translate.fix_special_tokens` takes them from the model config (`<s>` = 1, `</s>` = 2, pad = eos), and
           outputs are cut at the first `</s>`. A CPU check on the VM confirmed it.
-        - Next: `bash scripts/translate_compare2.sh` in a GPU slot (~20 min).
+      - **The GPU run (2026-11-01, 06:18–06:50 UTC, with two fixes along the way):**
+        - MADLAD ran out of memory on UltraFeedback's long passages at batch 16 × 4 beams. Now a batch that runs out
+          is retried as two halves, MADLAD's batch is 8, and the translators run with
+          `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+        - Seed-X had 17 of 40 translations cut off: Thai takes it 3.7× the tokens of English (max 5.4×), against at
+          most 2× for NLLB and MADLAD. Now the output limit is set per model (`max_new_ratio`, `max_new_tokens`):
+          Seed-X 6× and 1,024, the others 2.5× and 512. The cut files are kept in `seedx_cut_v1/`.
+        - After the rerun, 1 Seed-X translation is still cut: a prompt with unfenced JavaScript, which the
+          English-only rule drops anyway.
+        - **Waiting for the user's grades:** the laptop has the sheet in `data/vm/translate_compare2/` (160 rows, 40
+          per translator, blind). Then `distill compare-report data/vm/translate_compare2/translate_compare2.xlsx
+          --out reports/translate_compare2.md`.
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
