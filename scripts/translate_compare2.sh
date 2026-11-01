@@ -16,7 +16,8 @@ if [ ! -s "$OUT/logiqa_th.judge.jsonl" ]; then distill compare-pick --per-set "$
 NEW=()
 for role in $TRANSLATORS; do
   echo "== $(date -u +%H:%M) translate the pool with $role"
-  distill compare-translate --role "$role" --dir "$OUT"
+  # Less fragmentation for long beam-search batches (only here: not for the vLLM server below)
+  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True distill compare-translate --role "$role" --dir "$OUT"
   NEW+=("$OUT"/*_th."$role".jsonl)
 done
 echo "== $(date -u +%H:%M) check the new translations with the judge"

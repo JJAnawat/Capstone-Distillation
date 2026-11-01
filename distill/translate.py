@@ -215,25 +215,37 @@ def load_engine(h):
     wrap = ((lambda p: (tok.bos_token if add_bos else "") + h["prompt"].format(text=p)) if causal
             else (lambda p: h.get("prefix", "") + p))
 
-    def translate(pieces):
-        order = sorted(range(len(pieces)), key=lambda i: len(pieces[i]))
-        texts, cut = [""] * len(pieces), [False] * len(pieces)
-        for b in range(0, len(order), h.get("batch_size", 16)):
-            idx = order[b:b + h.get("batch_size", 16)]
+    def batch(pieces, idx, texts, cut):
+        """Translate pieces[idx] in one generate call; on running out of GPU memory, retry as two halves."""
+        try:
             enc = tok([wrap(pieces[i]) for i in idx], return_tensors="pt", padding=True).to(device)
             cap = min(512, 2 * enc["input_ids"].shape[1] + 16)
             with torch.no_grad():
                 gen = model.generate(**enc, num_beams=h.get("num_beams", 1), do_sample=False, max_new_tokens=cap,
                                      **extra)
-            if causal:
-                gen = gen[:, enc["input_ids"].shape[1]:]
-            for i, g in zip(idx, gen):
-                if causal:  # the continuation ends at its first eos (pad is eos too); none means it hit the cap
-                    stop = (g == tok.eos_token_id).nonzero()
-                    g, cut[i] = (g[:stop[0, 0]], False) if stop.numel() else (g, True)
-                else:
-                    cut[i] = int((g != tok.pad_token_id).sum()) >= cap
-                texts[i] = clean_mt(tok.decode(g, skip_special_tokens=True))
+        except torch.OutOfMemoryError:
+            if len(idx) == 1:
+                raise
+            torch.cuda.empty_cache()
+            half = len(idx) // 2
+            batch(pieces, idx[:half], texts, cut)
+            batch(pieces, idx[half:], texts, cut)
+            return
+        if causal:
+            gen = gen[:, enc["input_ids"].shape[1]:]
+        for i, g in zip(idx, gen):
+            if causal:  # the continuation ends at its first eos (pad is eos too); none means it hit the cap
+                stop = (g == tok.eos_token_id).nonzero()
+                g, cut[i] = (g[:stop[0, 0]], False) if stop.numel() else (g, True)
+            else:
+                cut[i] = int((g != tok.pad_token_id).sum()) >= cap
+            texts[i] = clean_mt(tok.decode(g, skip_special_tokens=True))
+
+    def translate(pieces):
+        order = sorted(range(len(pieces)), key=lambda i: len(pieces[i]))
+        texts, cut, size = [""] * len(pieces), [False] * len(pieces), h.get("batch_size", 16)
+        for b in range(0, len(order), size):
+            batch(pieces, order[b:b + size], texts, cut)
         return texts, cut
     return translate
 
