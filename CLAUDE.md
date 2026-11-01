@@ -336,6 +336,9 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
        - `REDO_LANGUAGE=1` redoes night 1's English-step samples (`compress --redo-wrong-language`).
        - `rate.max_tokens` is 2048, and ratings without a level are asked again.
        - Thai LogiQA is capped at 1,200 prompts, about 2,700 rows (`LIMIT_CLOSED=1200`).
+       - **Dry check on night 1's data** (VM CPU, scratch output):
+         - The fixed filter keeps 93 more samples (No Robots +23, HelpSteer2 +33, UltraFeedback +35).
+         - The redo will compress 715 English-step records again (211 / 311 / 166 / 27), which takes a few minutes.
        - The copied `Final answer:` line stays in the rationales. It's in 91% of Thai and 74% of English LogiQA
          rationales; the user left it for the training stage.
   3. **G2, night 2 (about 4.4 h):** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh`.
