@@ -239,6 +239,29 @@ Thai sets first run translate → check-translation → similarity → build-tra
             2.13.0+cu130, vLLM's build.
         - **CometKiwi XL is dropped:** its repo is gated (403 for the VM's token), and the user couldn't get
           access ("use what's there"). The comparison runs MetricX and Typhoon. `.venv-comet` and the role stay.
+      - **The GPU run (2026-11-01, 10:32–10:47 UTC, 15 min, no failures):**
+        - MetricX scored all 1,356 translations in about 2 min, its load included. In the sample, 16 were read
+          in pieces and 3 truncated.
+        - Typhoon 2.5 loaded with online FP8 on the A100 (Marlin) and checked them at ~850 tok/s.
+        - MetricX logs a tied-weights warning, which is harmless. Its config has `tie_word_embeddings: false`, so
+          transformers keeps the checkpoint's own `lm_head` and applies no output scaling, as the repo's class does.
+      - **G1's grades** (`reports/translate_compare.md`):
+        - All graded rows: MetricX AUC 0.84, Spearman 0.56; Gemma 0.79 / 0.53; Typhoon 0.60; Qwen3-32B 0.69.
+          At 93% of good translations kept, MetricX rejects 68% of the bad ones and Gemma 56%.
+        - **Only rows a gate would act on** (no rule flag, not English-only; 85 good, 11 bad): Gemma 0.53, close to
+          chance; MetricX 0.65; Typhoon 0.50. Gemma's 0.79 came largely from untranslated copies, which the rules
+          already drop.
+        - With 11 bad translations these AUCs are rough. Gemma's own translations hold only 2 bad ones.
+      - **The pool** (`data/checker_compare/picks.json`; the sheet is `reports/checker_compare.xlsx`, and the laptop
+        has it in `data/vm/checker_compare/`):
+        - Gemma rejects 31 of the 1,200 sampled translations (2.6%).
+        - Thresholds at the same rate: MetricX quality -9.0 (error 9), Typhoon meaning 2.68.
+        - The candidates rarely agree with Gemma: of their 31 rejections each, 4 (MetricX) and 1 (Typhoon) are
+          also Gemma's. Typhoon calls 6 more English-only.
+        - 64 rows to grade: 20 all pass, 15 only Gemma rejects, 14 only MetricX, 13 only Typhoon, 2 both
+          candidates. By set: UltraFeedback 23, No Robots 16, HelpSteer2 14, LogiQA 11.
+        - **Waiting for the user's grades.** Then, on the VM: `distill checker-report reports/checker_compare.xlsx
+          --out reports/checker_compare.md`.
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
@@ -421,8 +444,9 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
          rationales; the user left it for the training stage.
   3. **The second translator comparison ran; Gemma stays** (Key decisions).
   4. **First the checker comparison** (Key decisions):
-     - `bash scripts/checker_compare.sh` (~25 min of GPU; MetricX and Typhoon, since CometKiwi's gate stayed closed);
-     - the user grades `reports/checker_compare.xlsx` (~80 rows);
+     - `bash scripts/checker_compare.sh`: **done** (15 min of GPU; MetricX and Typhoon, since CometKiwi's gate
+       stayed closed);
+     - the user grades `reports/checker_compare.xlsx` (64 rows);
      - `distill checker-report reports/checker_compare.xlsx --out reports/checker_compare.md`;
      - decide, then delete the losing models from `~/hf`.
   5. **G2, night 2 (about 4.4 h):** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh`.
