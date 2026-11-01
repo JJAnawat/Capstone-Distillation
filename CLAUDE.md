@@ -237,7 +237,8 @@ Thai sets first run translate → check-translation → similarity → build-tra
           - comet imports `pkg_resources`, so it needs `setuptools<81`.
           - uv pulled torch 2.15+cu132, but the driver (580) supports CUDA 13.0, so torch is pinned to
             2.13.0+cu130, vLLM's build.
-        - **CometKiwi XL is still gated** for the VM's token (403): it waits for the user to accept its terms.
+        - **CometKiwi XL is dropped:** its repo is gated (403 for the VM's token), and the user couldn't get
+          access ("use what's there"). The comparison runs MetricX and Typhoon. `.venv-comet` and the role stay.
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
@@ -420,9 +421,7 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
          rationales; the user left it for the training stage.
   3. **The second translator comparison ran; Gemma stays** (Key decisions).
   4. **First the checker comparison** (Key decisions):
-     - **Before deploying:** the user accepts CometKiwi XL's terms on Hugging Face with the account behind the VM's
-       token, which also needs read access to public gated repos.
-     - `bash scripts/checker_compare.sh` (~25 min of GPU);
+     - `bash scripts/checker_compare.sh` (~25 min of GPU; MetricX and Typhoon, since CometKiwi's gate stayed closed);
      - the user grades `reports/checker_compare.xlsx` (~80 rows);
      - `distill checker-report reports/checker_compare.xlsx --out reports/checker_compare.md`;
      - decide, then delete the losing models from `~/hf`.

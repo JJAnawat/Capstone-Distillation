@@ -3,8 +3,8 @@
 # graded translations (G1: their agreement with the hand grades) and a sample of night 1's translations, PER_SET per
 # Thai set (where they and the judge disagree). One model on the GPU at a time:
 #   metricx    MetricX-24 XXL, in-process (vLLM's venv)
-#   cometkiwi  CometKiwi XL, in-process from .venv-comet (unbabel-comet pins its own numpy and torch)
 #   typhoon25  Typhoon 2.5 behind vLLM, quantized to FP8 while loading; if it does not start, the rest goes on
+#   cometkiwi  (not in the default: its gated repo was not accessible) CometKiwi XL, in-process from .venv-comet
 # Then G1's report gains the new checkers, and the disagreement pool goes to a grading sheet.
 #   tmux new -s checkers 'bash scripts/checker_compare.sh 2>&1 | tee -ai logs/checkers.log'
 # After grading the sheet by hand: distill checker-report reports/checker_compare.xlsx --out reports/checker_compare.md
@@ -14,7 +14,7 @@ SAMPLE=${SAMPLE:-$OUT/sample}
 PER_SET=${PER_SET:-300}
 SHEET=${SHEET:-reports/checker_compare.xlsx}
 G1_SHEET=${G1_SHEET:-reports/translate_compare.xlsx}
-CHECKERS=${CHECKERS:-"metricx cometkiwi typhoon25"}
+CHECKERS=${CHECKERS:-"metricx typhoon25"}
 
 source scripts/lib.sh
 if [ ! -s "$SAMPLE/logiqa_th.jsonl" ]; then distill checker-sample --per-set "$PER_SET" --out-dir "$SAMPLE"; fi

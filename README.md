@@ -393,8 +393,9 @@ judge, as a possible second gate.
 - **Candidates:**
   - `metricx`: MetricX-24 XXL. A translation-quality metric (QE, no reference translation): an error score from 0 to
     25.
-  - `cometkiwi`: CometKiwi XL, a score from 0 to 1. It is gated, so accept its terms on Hugging Face first. It runs
-    from `.venv-comet`, because `unbabel-comet` needs numpy 1 and transformers 4. comet imports `pkg_resources`, so
+  - `cometkiwi`: CometKiwi XL, a score from 0 to 1. It is gated, and the project couldn't get access, so it isn't in
+    the script's default `CHECKERS`; the role stays. It runs from `.venv-comet`, because `unbabel-comet` needs
+    numpy 1 and transformers 4. comet imports `pkg_resources`, so
     it needs setuptools. Its torch is pinned to the build vLLM's venv uses, since the driver supports CUDA 13.0:
     ```bash
     uv venv .venv-comet --python 3.12 && uv pip install --python .venv-comet -e . "unbabel-comet>=2.2" "setuptools<81"
