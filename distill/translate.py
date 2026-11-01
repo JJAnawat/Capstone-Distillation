@@ -5,7 +5,9 @@ import json
 import math
 import random
 import re
+import time
 from collections import Counter, defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 from distill import data, judge, report, server, verify
@@ -23,6 +25,8 @@ URL = re.compile(r"https?://\S+")
 CODE = re.compile(r"```.*?```", re.S)
 OPTION = re.compile(r"^([A-H])\.\s*(.+?)\s*$", re.M)
 THAI_DIGITS = str.maketrans("๐๑๒๓๔๕๖๗๘๙", "0123456789")
+MT_PREFIX = re.compile(r"^(?:\s*(?:[A-H]\.|#{1,6}|[-*•]|\d+[.)])\s+|\s+)")  # kept as is by sentence-level models
+SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
 
 def stem(path):
@@ -56,27 +60,46 @@ def source_rows(cfg, dataset, limit=None):
     return data.sample(pool, limit, cfg["generate"]["seed"]), len(pool), len(used)
 
 
+def record(cfg, dataset, r, meta, text, finish, reference, tokens):
+    """A translation record in the schema every later step reads, with its rule flags."""
+    rec = {"id": r["id"], "dataset": dataset, "source_dataset": r["source_dataset"], "input_en": r["input"],
+           "input": text, "finish_reason": finish, "reference_en": r.get("reference"), "reference": reference,
+           "strata": r.get("strata"), "closed": bool(r.get("closed")), "gold": r.get("gold") or [],
+           "hint_ok": bool(r.get("hint_ok")), "translator": meta, "tokens": tokens}
+    rec["rule_flags"] = rule_flags(rec, cfg)
+    return rec
+
+
 def run(cfg, dataset, translator=None, limit=None, out=None, reference=True, concurrency=None, backend=None,
-        client=None, dry_run=False):
-    """Translate the Thai set's source questions with the `translator` role's model (teacher, judge or typhoon), and
-    their reference answers when the judge would use them (`hint_ok`). Each record carries its rule flags."""
+        client=None, dry_run=False, ids=None):
+    """Translate the Thai set's source questions with the `translator` role's model, and their reference answers when
+    the judge would use them (`hint_ok`). Each record carries its rule flags. A role with an `hf:` block (NLLB, MADLAD,
+    Seed-X) runs in-process (`run_hf`); the others go to their vLLM or OpenRouter endpoint. `ids` restricts the run to
+    those source questions (the translator comparison)."""
     tc = cfg["translate"]
     rows, pool, used = source_rows(cfg, dataset, limit)
     print(f"[translate] {dataset}: {used} prompts used in English excluded, {pool} left, {len(rows)} sampled")
     if dry_run:
         return {}
+    if ids is not None:
+        wanted = set(ids)
+        if missing := wanted - {r["id"] for r in rows}:
+            raise ValueError(f"{dataset}: {len(missing)} ids are not in the set's sample, e.g. {sorted(missing)[0]}")
+        rows = [r for r in rows if r["id"] in wanted]
     translator = translator or tc["translator"]
     if not translator:
         raise ValueError("no translator: pass --translator or set translate.translator (the comparison's winner)")
+    out = out or TRANSLATE_DIR / f"{dataset}.jsonl"
+    done = {rid for rid, _ in read_done_keys(out)}
+    todo = [r for r in rows if r["id"] not in done]
+    if "hf" in cfg[translator]:
+        return run_hf(cfg, dataset, translator, todo, out, reference)
     backend = backend or cfg["backend"]
     if backend not in cfg[translator]:
         raise ValueError(f"the {translator} has no {backend} endpoint in the config")
     ep = server.endpoint(cfg, translator, backend)
-    out = out or TRANSLATE_DIR / f"{dataset}.jsonl"
     system, user, prompt_hash = load_template("translate_typhoon" if translator == "typhoon" else "translate",
                                               tc["prompt_version"])
-    done = {rid for rid, _ in read_done_keys(out)}
-    todo = [r for r in rows if r["id"] not in done]
     print(f"[translate] {dataset} with the {translator} ({ep['model']}): {len(rows) - len(todo)} already done, "
           f"{len(todo)} to run")
     if not todo:
@@ -98,18 +121,137 @@ def run(cfg, dataset, translator=None, limit=None, out=None, reference=True, con
         seed = sample_seed(cfg["generate"]["seed"], r["id"], 0)
         p = ask(r["input"], seed)
         ref = ask(r["reference"], seed) if reference and r.get("hint_ok") and r.get("reference") else None
-        rec = {"id": r["id"], "dataset": dataset, "source_dataset": r["source_dataset"], "input_en": r["input"],
-               "input": p["answer"], "finish_reason": p["finish_reason"],
-               "reference_en": r.get("reference"),
-               "reference": ref["answer"] if ref and ref["finish_reason"] == "stop" else None,
-               "strata": r.get("strata"), "closed": bool(r.get("closed")), "gold": r.get("gold") or [],
-               "hint_ok": bool(r.get("hint_ok")), "translator": meta,
-               "tokens": p["answer_tokens"] + (ref["answer_tokens"] if ref else 0)}
-        rec["rule_flags"] = rule_flags(rec, cfg)
+        rec = record(cfg, dataset, r, meta, p["answer"], p["finish_reason"],
+                     ref["answer"] if ref and ref["finish_reason"] == "stop" else None,
+                     p["answer_tokens"] + (ref["answer_tokens"] if ref else 0))
         return rec, rec["tokens"]
 
     return server.run_pool("translate", work, todo, str(out), concurrency, lambda r: {"id": r["id"]},
                            dataset=dataset, translator=translator, backend=ep["backend"], model=ep["model"])
+
+
+# ---------------------------------------------------------------- sentence-level models (in-process)
+
+def chunks(text, max_chars):
+    """`text` cut at sentence ends into pieces of at most `max_chars`; a longer sentence is cut at spaces."""
+    out, cur = [], ""
+    for s in SENTENCE.split(text):
+        while len(s) > max_chars:
+            cut = s.rfind(" ", 0, max_chars)
+            cut = cut if cut > 0 else max_chars
+            if cur:
+                out, cur = out + [cur], ""
+            out.append(s[:cut])
+            s = s[cut:].lstrip()
+        if cur and len(cur) + 1 + len(s) > max_chars:
+            out, cur = out + [cur], s
+        else:
+            cur = f"{cur} {s}" if cur else s
+    return out + [cur] if cur else out
+
+
+def split_for_mt(text, max_chars=600):
+    """A sentence-level model's view of a prompt, line by line: a line kept as is (blank, a code fence or inside a code
+    block), or (prefix, pieces). The prefix (an option label, list marker, heading or indent) is kept, and the pieces,
+    at most `max_chars` long, are what gets translated."""
+    plan, code = [], False
+    for line in text.split("\n"):
+        if line.strip().startswith("```"):
+            code = not code
+        if code or not line.strip() or line.strip().startswith("```"):
+            plan.append(line)
+            continue
+        prefix = m.group(0) if (m := MT_PREFIX.match(line)) else ""
+        plan.append((prefix, chunks(line[len(prefix):].strip(), max_chars)))
+    return plan
+
+
+def join_mt(plan, translated):
+    """The translated prompt: each line rebuilt from its prefix and translated pieces."""
+    return "\n".join(p if isinstance(p, str) else p[0] + " ".join(translated[c] for c in p[1]) for p in plan)
+
+
+def translate_texts(texts, engine, max_chars):
+    """[(translation, truncated)] for `texts` with a sentence-level `engine`: each text is split (`split_for_mt`), the
+    distinct pieces are translated once, and each text is put back together."""
+    plans = [split_for_mt(t, max_chars) for t in texts]
+    pieces_of = lambda plan: [c for p in plan if not isinstance(p, str) for c in p[1]]
+    pieces = list(dict.fromkeys(c for plan in plans for c in pieces_of(plan)))
+    out, cut = engine(pieces) if pieces else ([], [])
+    done = {c: (o, k) for c, o, k in zip(pieces, out, cut)}
+    return [(join_mt(plan, {c: done[c][0] for c in pieces_of(plan)}), any(done[c][1] for c in pieces_of(plan)))
+            for plan in plans]
+
+
+def load_engine(h):
+    """translate(pieces) -> (texts, truncated) for an `hf:` role, with transformers on the GPU. `seq2seq` models (NLLB,
+    MADLAD) get a source language or a target-language prefix; `causal` ones (Seed-X) get each piece in the role's
+    prompt, and only the continuation is decoded. Beam search; a piece is truncated when it reaches the token cap."""
+    import torch
+    import transformers as tf
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    causal = h.get("kind") == "causal"
+    tok = tf.AutoTokenizer.from_pretrained(h["model"], **({"src_lang": h["src_lang"]} if "src_lang" in h else {}))
+    if causal:
+        tok.padding_side = "left"
+        tok.pad_token = tok.pad_token or tok.eos_token
+    model_cls = tf.AutoModelForCausalLM if causal else tf.AutoModelForSeq2SeqLM
+    model = model_cls.from_pretrained(h["model"], dtype=getattr(torch, h.get("dtype", "bfloat16"))).to(device).eval()
+    extra = {"forced_bos_token_id": tok.convert_tokens_to_ids(h["tgt_lang"])} if "tgt_lang" in h else {}
+    wrap = (lambda p: h["prompt"].format(text=p)) if causal else (lambda p: h.get("prefix", "") + p)
+
+    def translate(pieces):
+        order = sorted(range(len(pieces)), key=lambda i: len(pieces[i]))
+        texts, cut = [""] * len(pieces), [False] * len(pieces)
+        for b in range(0, len(order), h.get("batch_size", 16)):
+            idx = order[b:b + h.get("batch_size", 16)]
+            enc = tok([wrap(pieces[i]) for i in idx], return_tensors="pt", padding=True).to(device)
+            cap = min(512, 2 * enc["input_ids"].shape[1] + 16)
+            with torch.no_grad():
+                gen = model.generate(**enc, num_beams=h.get("num_beams", 1), do_sample=False, max_new_tokens=cap,
+                                     **extra)
+            if causal:
+                gen = gen[:, enc["input_ids"].shape[1]:]
+            for i, g in zip(idx, gen):
+                texts[i] = clean_mt(tok.decode(g, skip_special_tokens=True))
+                cut[i] = int((g != tok.pad_token_id).sum()) >= cap
+        return texts, cut
+    return translate
+
+
+def clean_mt(text):
+    """A model's translation without a stray target-language tag (Seed-X's prompts end in `<th>`)."""
+    return re.sub(r"\s*<th>\s*", " ", text).strip()
+
+
+@lru_cache(maxsize=1)
+def hf_engine(spec):
+    """`load_engine` for an `hf:` role given as JSON, cached: a model loads once per process, whatever the sets."""
+    return load_engine(json.loads(spec))
+
+
+def run_hf(cfg, dataset, role, todo, out, reference=True):
+    """Translate with an in-process `hf:` role: each prompt (and reference, when asked) is split into lines and
+    sentences, the pieces are translated in batches, and the translation is put back together."""
+    h = cfg[role]["hf"]
+    print(f"[translate] {dataset} with the {role} ({h['model']}, transformers): {len(todo)} to run")
+    if not todo:
+        return {}
+    start, engine = time.time(), hf_engine(json.dumps(h, sort_keys=True))
+    refs = [r for r in todo if reference and r.get("hint_ok") and r.get("reference")]
+    done = translate_texts([r["input"] for r in todo] + [r["reference"] for r in refs], engine, h.get("max_chars", 600))
+    ref_of = dict(zip((r["id"] for r in refs), done[len(todo):]))
+    meta = {"model": h["model"], "role": role, "engine": "transformers", "num_beams": h.get("num_beams", 1)}
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "a", encoding="utf-8") as f:
+        for r, (text, cut) in zip(todo, done):
+            ref = ref_of.get(r["id"])
+            rec = record(cfg, dataset, r, meta, text, "length" if cut else "stop",
+                         ref[0] if ref and not ref[1] else None, 0)
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    print(f"[translate] {dataset}: {len(todo)} translations written in {(time.time() - start) / 60:.1f} min")
+    return {"done": len(todo)}
 
 
 def numbers(text):
@@ -315,6 +457,35 @@ GUIDE = [
     ("note", "Optional: anything worth knowing, e.g. the task only makes sense in English."),
 ]
 HEADER = ["row", "set", "English prompt", "Thai translation", "meaning (1-5)", "fluency (1-5)", "note"]
+
+
+def compare_pick(cfg, per_set, out_dir, exclude_run="data/full_th", seed=0):
+    """The pool of a later translator comparison: for each Thai set, a seeded stratified sample of `per_set` of the
+    translator's records (data/translate/<set>.jsonl, failed translations included) whose questions the run has not
+    distilled yet (no samples in `exclude_run`). They and their checks are copied to <out_dir>/<set>.judge.jsonl and
+    <set>.judge.check.jsonl, so the existing translations need no GPU."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for ds in (n for n in cfg["datasets"] if data.translate_source(cfg, n)):
+        path = TRANSLATE_DIR / f"{ds}.jsonl"
+        if not path.exists():
+            print(f"[compare] {ds}: no translations in {path}; skipped")
+            continue
+        done = {r["id"] for f in Path(exclude_run).glob(f"{ds}_*_B_raw.jsonl") for r in report.iter_jsonl(f)}
+        recs = [r for r in report.iter_jsonl(path) if r["id"] not in done]
+        picked, checks = data.sample(recs, per_set, seed), by_id(check_path(path, "judge"))
+        report.write_jsonl(out_dir / f"{ds}.judge.jsonl", picked)
+        report.write_jsonl(out_dir / f"{ds}.judge.check.jsonl", [checks[r["id"]] for r in picked if r["id"] in checks])
+        print(f"[compare] {ds}: {len(picked)} of {len(recs)} undistilled translations picked ({len(done)} distilled)")
+
+
+def compare_translate(cfg, role, out_dir):
+    """Translate the questions of every <set>.judge.jsonl in `out_dir` with `role`, into <set>.<role>.jsonl. An `hf:`
+    role's model loads once for all the sets."""
+    for pick in sorted(Path(out_dir).glob("*.judge.jsonl")):
+        ds = pick.name.removesuffix(".judge.jsonl")
+        run(cfg, ds, role, ids=[r["id"] for r in report.iter_jsonl(pick)], reference=False,
+            out=Path(out_dir) / f"{ds}.{role}.jsonl")
 
 
 def cell(text, limit=32000):

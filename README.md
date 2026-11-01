@@ -24,7 +24,7 @@ distill/cli.py        command line
 config.yaml           every setting: models, servers, sampling, thresholds, datasets
 prompts/              versioned templates: {name}_{version}.txt
 scripts/              pipeline.sh (+ lib.sh), run_pilot.sh / run_full.sh / bench.sh / vm_check.sh / collect.sh (GPU VM),
-                      translate_compare.sh / second_checker.sh / run_thai.sh (Thai sets, GPU VM), smoke_openrouter.sh (laptop)
+                      translate_compare.sh / translate_compare2.sh / second_checker.sh / run_thai.sh (Thai, GPU VM), smoke_openrouter.sh (laptop)
 ```
 
 ## Pipeline
@@ -366,6 +366,19 @@ unreadable ones (not a whole number from 1 to 5) are listed and skipped. Transla
 whose three translations all have a meaning grade, so grade a prompt's rows together; the signals use every graded
 row. A translation with no Thai letters is an untranslated copy and counts as meaning 1, as the guide's scale says.
 Set `translate.translator`, `checker` and `min_meaning` from it.
+
+**A second translator comparison** (~20 min of GPU, `scripts/translate_compare2.sh`) tests dedicated translation
+models against Gemma.
+- **Models:** Seed-X-PPO-7B, MADLAD-400 10B and NLLB-200 3.3B. They are config roles with an `hf:` block.
+- **How they run:** none is a chat model, so they run in-process with transformers instead of vLLM. A prompt is
+  split into lines and sentences of at most `max_chars` (`translate.split_for_mt`). Code blocks, option labels and
+  list markers stay as they are. The pieces are translated in batches, and the prompt is put back together.
+- **Pool:** `distill compare-pick --per-set 10` takes 40 questions the Thai run hasn't distilled, with the
+  translations and checks Gemma already made. Failed translations are included.
+- **Translation:** `distill compare-translate --role seedx|madlad|nllb` translates the same questions, with each
+  model loading once.
+- **Grading:** the judge checks the new translations, and a 160-row sheet goes to `reports/translate_compare2.xlsx`.
+  `compare-report` reads it as before.
 
 **A checker from another family** (~10 min of GPU, before the Thai run): `scripts/second_checker.sh` has the
 `checker` role score the same 156 translations. The report then puts each checker beside the hand grades, with its

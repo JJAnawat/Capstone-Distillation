@@ -18,6 +18,9 @@ dependencies = [
 dev = ["pytest>=8"]
 # `distill similarity`: cross-lingual embeddings of the English and Thai prompt (pulls in torch; on the VM, vLLM's).
 qe = ["sentence-transformers>=3"]
+# Sentence-level translators run in-process (NLLB, MADLAD, Seed-X): their tokenizers; transformers and torch come
+# with vLLM on the VM.
+mt = ["sentencepiece>=0.2"]
 # GPU VM only (vLLM installs on Linux). Pin the version that passes the first VM run: it must serve Qwen3.5 and Gemma 4.
 vm = ["vllm; sys_platform == 'linux'"]
 

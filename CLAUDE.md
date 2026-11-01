@@ -161,6 +161,23 @@ Thai sets first run translate → check-translation → similarity → build-tra
       - **On Gemma's translations it leans +0.20, where Gemma leans +0.23:** an independent checker rates them as
         Gemma does, so there's no sign that Gemma favours its own work.
       - So `translate.checker` stays `judge`, with `min_meaning: 4.0`.
+    - **A second translator comparison** (the user's call, 2026-11-01). The user felt G1's pool was too small to
+      crown Gemma.
+      - On G1's 39 complete prompts Gemma's lead is significant: against Qwen, meaning +0.41 (95% CI +0.15 to +0.69,
+        sign test p = 0.03) and fluency +0.54 (p = 0.0004); against Typhoon, +1.26 and +1.15. But no dedicated
+        translation model had been tried.
+      - **Candidates:** Seed-X-PPO-7B (OpenMDW), MADLAD-400 10B (Apache-2.0) and NLLB-200 3.3B (CC BY-NC). They are
+        the `hf:` roles `seedx`, `madlad` and `nllb`, run in-process with transformers and split into sentences.
+      - **Ruled out:**
+        - Hunyuan-MT-7B, the WMT25 winner: its license forbids using outputs to improve another model.
+        - TranslateGemma: gated, no Thai on its card, and Gemma's family.
+        - Tower-Plus: no Thai.
+        - SeamlessM4T v2: close to NLLB.
+      - **Pool:** 40 undistilled questions (10 per set; `compare-pick`), with Gemma's existing translations, so 160
+        rows graded blind. It detects a meaning gap of about 0.4.
+      - **Decision rule:** switch only if a rival beats Gemma clearly on meaning (sign test p < 0.05) and is no worse
+        on fluency. Otherwise Gemma stays: night 1 used it, and switching means mixed translators.
+      - **Night 2 waits for this decision.**
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
@@ -341,7 +358,13 @@ Confirm that running it on company hardware is acceptable. See docs/LICENSES.md.
          - The redo will compress 715 English-step records again (211 / 311 / 166 / 27), which takes a few minutes.
        - The copied `Final answer:` line stays in the rationales. It's in 91% of Thai and 74% of English LogiQA
          rationales; the user left it for the training stage.
-  3. **G2, night 2 (about 4.4 h):** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh`.
+  3. **First the second translator comparison** (Key decisions):
+     - `bash scripts/translate_compare2.sh` (~20 min of GPU);
+     - the user grades `reports/translate_compare2.xlsx` (160 rows);
+     - `compare-report … --out reports/translate_compare2.md`;
+     - decide, then delete the losing models from `~/hf`.
+     If a rival wins, a follow-up plan re-translates the undistilled questions before night 2.
+  4. **G2, night 2 (about 4.4 h):** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh`.
      - It takes every remaining open prompt (No Robots 775, HelpSteer2 792, UltraFeedback 652) and 700 more LogiQA,
        plus the redo.
      - The estimate uses night 1's rates (open 4.2–4.6 s per prompt, LogiQA 7.2 s) plus about 20 min for model

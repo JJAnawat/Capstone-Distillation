@@ -12,6 +12,7 @@ from distill import compress, data, generate, hub, judge, rate, report, selectio
 
 BACKENDS = ["vllm", "openrouter"]
 ROLES = ["teacher", "judge", "typhoon", "checker"]  # typhoon: comparison only; checker: another-family checker
+MT_ROLES = ["seedx", "madlad", "nllb"]  # sentence-level translators, run in-process with transformers (config `hf:`)
 ONLY_HELP = "only prompts with (closed) or without (open) a known short answer"
 
 
@@ -113,7 +114,7 @@ def run(argv=None):
 
     t = sub.add_parser("translate", help="translate a Thai set's new source questions (and judge references)")
     t.add_argument("--dataset", required=True, help="a Thai set, e.g. no_robots_th")
-    t.add_argument("--translator", choices=ROLES, help="default: config translate.translator")
+    t.add_argument("--translator", choices=ROLES + MT_ROLES, help="default: config translate.translator")
     t.add_argument("--limit", type=int, help="first N of the set's sample (default: its config limit)")
     t.add_argument("--no-reference", action="store_true", help="translate the prompt only (the comparison)")
     t.add_argument("--out", help="default: data/translate/<dataset>.jsonl")
@@ -136,6 +137,13 @@ def run(argv=None):
     cr = sub.add_parser("compare-report", help="read the graded sheet and write the comparison report")
     cr.add_argument("xlsx")
     cr.add_argument("--out", default="reports/translate_compare.md")
+    cp = sub.add_parser("compare-pick", help="a new comparison pool: undistilled questions with the translator's work")
+    cp.add_argument("--per-set", type=int, required=True)
+    cp.add_argument("--out-dir", required=True)
+    cp.add_argument("--exclude-run", default="data/full_th", help="questions with samples here are left out")
+    ctr = sub.add_parser("compare-translate", help="translate a comparison pool's questions with another translator")
+    ctr.add_argument("--role", choices=ROLES + MT_ROLES, required=True)
+    ctr.add_argument("--dir", required=True)
 
     p = sub.add_parser("push", help="back up a run and the ratings to a private Hugging Face dataset repo")
     p.add_argument("out", help="the run's output directory, e.g. data/full")
@@ -198,6 +206,10 @@ def run(argv=None):
         translate.compare_sheet(args.files, args.out)
     elif args.cmd == "compare-report":
         translate.compare_report(args.xlsx, args.out)
+    elif args.cmd == "compare-pick":
+        translate.compare_pick(cfg, args.per_set, args.out_dir, args.exclude_run)
+    elif args.cmd == "compare-translate":
+        translate.compare_translate(cfg, args.role, args.dir)
     elif args.cmd == "push":
         hub.push(cfg, args.out, repo=args.repo)
 

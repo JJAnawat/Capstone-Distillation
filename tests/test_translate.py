@@ -101,6 +101,81 @@ def test_rule_flags(overrides, flag):
     assert flag in translate.rule_flags(r, CFG)
 
 
+LONG = "Long sentence number one is here. " * 30
+
+
+def test_split_and_join_keep_the_structure_and_translate_only_prose():
+    text = ("Which is true?\n\nA. Cats are mammals. They purr.\nB. Fish fly.\n\n```\nprint('hi')\n```\n"
+            "- keep the list marker\n" + LONG)
+    fake = lambda pieces: ([f"<{p}>" for p in pieces], [False] * len(pieces))
+    ((out, cut),) = translate.translate_texts([text], fake, 120)
+    lines = out.split("\n")
+    assert lines[:4] == ["<Which is true?>", "", "A. <Cats are mammals. They purr.>", "B. <Fish fly.>"]
+    assert "```\nprint('hi')\n```" in out and "- <keep the list marker>" in out and not cut
+    assert all(len(p) <= 120 for p in translate.chunks(LONG.strip(), 120)) and lines[-1].count("<") > 1
+    assert all(len(p) <= 50 for p in translate.chunks("word " * 100 + "x" * 80, 50))  # cut at spaces, then hard
+
+
+@pytest.fixture
+def fake_engine(monkeypatch):
+    """A stand-in for loading a transformers model: THAI for every piece, cut when it mentions 'take f'."""
+    loads = []
+
+    def load(h):
+        loads.append(h["model"])
+        return lambda pieces: ([THAI for _ in pieces], ["take f" in p for p in pieces])
+    translate.hf_engine.cache_clear()
+    monkeypatch.setattr(translate, "load_engine", load)
+    yield loads
+    translate.hf_engine.cache_clear()
+
+
+def test_an_hf_role_runs_in_process_on_the_given_ids_only(source, fake_engine, tmp_path):
+    out = tmp_path / "t.jsonl"
+    translate.run(CFG, "no_robots_th", "nllb", limit=8, ids=["p4", "p5"], reference=False, out=out)
+    recs = {r["id"]: r for r in report.read_jsonl(out)}
+    assert sorted(recs) == ["p4", "p5"] and recs["p4"]["input"] == THAI and recs["p4"]["rule_flags"] == []
+    assert recs["p4"]["translator"] == {"model": "facebook/nllb-200-3.3B", "role": "nllb", "engine": "transformers",
+                                        "num_beams": 4}
+    assert recs["p5"]["finish_reason"] == "length" and recs["p4"]["finish_reason"] == "stop"  # p5 is "take f"
+    translate.run(CFG, "no_robots_th", "nllb", limit=8, ids=["p6"], reference=False, out=tmp_path / "u.jsonl")
+    assert fake_engine == ["facebook/nllb-200-3.3B"]  # loaded once per process
+    with pytest.raises(ValueError, match="not in the set's sample"):
+        translate.run(CFG, "no_robots_th", "nllb", limit=8, ids=["p0"], out=tmp_path / "v.jsonl")  # used in English
+
+
+def test_seed_x_prompt_and_its_language_tag():
+    assert CFG["seedx"]["hf"]["prompt"].format(text="Hi") == "Translate the following English sentence into Thai:\nHi <th>"
+    assert translate.clean_mt("สวัสดี <th>") == "สวัสดี" and translate.clean_mt(" สวัสดี ") == "สวัสดี"
+
+
+def test_compare_pick_takes_undistilled_translations_with_their_checks(tmp_path, monkeypatch):
+    monkeypatch.setattr(translate, "TRANSLATE_DIR", tmp_path / "translate")
+    (tmp_path / "translate").mkdir()
+    (tmp_path / "run").mkdir()
+    recs = [{"id": f"q{i}", "strata": f"s{i % 3}", "input": THAI} for i in range(12)]
+    report.write_jsonl(tmp_path / "translate" / "logiqa_th.jsonl", recs)
+    report.write_jsonl(tmp_path / "translate" / "logiqa_th.check.jsonl", [{"id": r["id"], "meaning": 5} for r in recs])
+    report.write_jsonl(tmp_path / "run" / "logiqa_th_closed_B_raw.jsonl", [{"id": f"q{i}"} for i in range(6)])
+    translate.compare_pick(CFG, 4, tmp_path / "pool", exclude_run=tmp_path / "run")
+    picked = report.read_jsonl(tmp_path / "pool" / "logiqa_th.judge.jsonl")
+    checks = report.read_jsonl(tmp_path / "pool" / "logiqa_th.judge.check.jsonl")
+    assert len(picked) == 4 and not {r["id"] for r in picked} & {f"q{i}" for i in range(6)}
+    assert [c["id"] for c in checks] == [r["id"] for r in picked]
+    assert not (tmp_path / "pool" / "no_robots_th.judge.jsonl").exists()  # no translations for that set: skipped
+
+
+def test_compare_translate_covers_every_set_with_one_model_load(source, fake_engine, tmp_path):
+    cfg = copy.deepcopy(CFG)
+    for ds in ("no_robots_th", "helpsteer2_th"):
+        cfg["datasets"][ds]["translate"]["limit"] = 6
+        report.write_jsonl(tmp_path / f"{ds}.judge.jsonl", [{"id": "p4"}, {"id": "p7"}])
+    translate.compare_translate(cfg, "madlad", tmp_path)
+    for ds in ("no_robots_th", "helpsteer2_th"):
+        assert sorted(r["id"] for r in report.read_jsonl(tmp_path / f"{ds}.madlad.jsonl")) == ["p4", "p7"]
+    assert fake_engine == ["google/madlad400-10b-mt"]
+
+
 def test_numbers_read_thai_digits_and_thousands_separators():
     assert not translate.numbers("Pay 1,000 baht in 2024") - translate.numbers("จ่าย ๑๐๐๐ บาท ในปี 2024")
 
