@@ -178,6 +178,15 @@ Thai sets first run translate → check-translation → similarity → build-tra
       - **Decision rule:** switch only if a rival beats Gemma clearly on meaning (sign test p < 0.05) and is no worse
         on fluency. Otherwise Gemma stays: night 1 used it, and switching means mixed translators.
       - **Night 2 waits for this decision.**
+      - **CPU phase done (2026-11-01):**
+        - The VM's `~/hf` holds NLLB (16.4 GiB), MADLAD (39.9 GiB; its two unused GGUF files were deleted) and Seed-X
+          (14 GiB).
+        - The pool is built: `data/translate_compare2` on the VM, 10 per set, drawn from 900 undistilled questions
+          per open set and 1,150 for LogiQA.
+        - Seed-X ships a bare `tokenizer.json`, so under transformers 5 it has no bos, eos or pad.
+          `translate.fix_special_tokens` takes them from the model config (`<s>` = 1, `</s>` = 2, pad = eos), and
+          outputs are cut at the first `</s>`. A CPU check on the VM confirmed it.
+        - Next: `bash scripts/translate_compare2.sh` in a GPU slot (~20 min).
   - **The teacher keeps its English prompts.** Claude drafted Thai versions with a prompt test. The user judged
     the drafts poor and dropped both (2026-10-31). The English prompts already ask for the prompt's language, and
     the filter rejects English rationales for Thai questions.
