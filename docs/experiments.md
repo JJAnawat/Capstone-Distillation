@@ -111,6 +111,33 @@ Variant B, `LIMIT=2500` per set, `LIMIT_CLOSED=500` for UltraFeedback's noisy cl
   had no rating); Thai LogiQA capped at 1,200 prompts. A dry check on night 1's data: the fixed filter keeps 93 more
   samples, and the redo recompresses 715 records.
 
+### Thai night 2 (2026-11-01, 13:02–17:50 UTC; window until 18:00)
+- **Command:** `REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh` (`BY_SET=0`).
+- **A false start (13:02–13:48):**
+  - The code cleanup had dropped the read of vLLM 0.32's `reasoning` field (it now keeps only `reasoning_content`,
+    the deprecated name). So the first 2,174 No Robots samples were stored without their thinking, and compress
+    couldn't use them.
+  - The run was stopped, the field fixed (`server.reasoning_text` reads both names), and those samples removed and
+    regenerated. That cost ~45 min of GPU.
+- **Teacher phase (13:51–17:25):** 0 failures, all at 2,500–2,900 tok/s.
+  - Generated: No Robots 2,174 samples, HelpSteer2 2,454, UltraFeedback 1,920, LogiQA 2,782 (1,200 prompts).
+  - Compress redid 715 English-step rationales (211 / 311 / 166 / 27), as the dry check predicted.
+  - Re-rating: 34 LogiQA prompts left unrated on night 1 were rated again.
+- **Filter:**
+
+| set | kept | rejected | language mismatch | night 1's language rejections |
+|---|---:|---:|---:|---:|
+| No Robots | 3,579 | 91 | 57 (1.6%) | 16–24% across the open sets |
+| HelpSteer2 | 3,867 | 159 | 99 (2.5%) | |
+| UltraFeedback | 3,218 | 176 | 113 (3.3%) | |
+| LogiQA | 4,748 | 24 | 23 | |
+
+  `compress_v4` and the Thai-aware filter cut the language rejections about tenfold.
+- **Judge phase (from ~17:32):** No Robots fully judged (2,341 new samples). HelpSteer2 got 202 of 2,681 before the
+  stopper's Ctrl-C at 17:50.
+- **Left for the next window (~45 min):** judging ~2,400 HelpSteer2, ~2,000 UltraFeedback and ~2,500 LogiQA samples,
+  then select, push and the report.
+
 ## 8. Second translator comparison, G2 (2026-11-01)
 - **Why:** the user found G1's pool too small to crown Gemma, and no dedicated translation model had been tried.
 - **Candidates:** Seed-X-PPO-7B, MADLAD-400 10B and NLLB-200 3.3B, run in-process with transformers on sentence-sized
