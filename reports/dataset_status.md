@@ -1,6 +1,4 @@
-# Dataset status (2026-11-08 16:57 UTC)
-
-**Interim:** the Thai LogiQA rows are still night 1's (500 prompts). Its night-2 samples (1,200 prompts) are half judged; the next window finishes them and replaces this file. Expected then: about 2.5–2.8k Thai LogiQA rows, 5.7–6.0k Thai rows in all.
+# Dataset status (2026-11-08 17:35 UTC)
 
 Final training rows (`*.final.jsonl` in `data/full` and `data/full_th`). Tokens are the student's (`student_tokens.total`: input + rationale + answer + 32 template tokens; the context is 2,048).
 
@@ -12,14 +10,14 @@ Final training rows (`*.final.jsonl` in `data/full` and `data/full_th`). Tokens 
 | ultrafeedback_closed (English) | 846 | 458 | 1.85 | 37 | 407,029 | 386 / 857 / 1766 | 6.3% | 192 / 108 / 41 | 5 | 324 / 455 / 50 / 0 / 0 / 17 | 708 / 138 | 8.08 / 84% |
 | ultrafeedback_open (English) | 2,304 | 2,304 | 1.00 | 149 | 1,224,264 | 402 / 1154 / 2048 | 12.4% | 72 / 123 / 57 | 4 | 1256 / 529 / 353 / 131 / 24 / 11 | 0 / 2,304 | 8.87 / 98% |
 | helpsteer2_th_open (Thai) | 1,161 | 1,161 | 1.00 | 110 | 516,825 | 351 / 823 / 2008 | 5.9% | 26 / 114 / 160 | 5 | 502 / 135 / 347 / 138 / 38 / 1 | 0 / 1,161 | 8.85 / 98% |
-| logiqa_th_closed (Thai) | 1,133 | 421 | 2.69 | 79 | 474,067 | 400 / 562 / 1039 | 0.2% | 161 / 123 / 70 | 6 | 4 / 560 / 498 / 5 / 0 / 66 | 1,133 / 0 | 8.22 / 85% |
+| logiqa_th_closed (Thai) | 2,736 | 1,011 | 2.71 | 189 | 1,161,839 | 404 / 564 / 1147 | 0.2% | 163 / 124 / 72 | 6 | 9 / 1317 / 1342 / 40 / 0 / 28 | 2,736 / 0 | 8.23 / 85% |
 | no_robots_th_open (Thai) | 1,052 | 1,052 | 1.00 | 210 | 417,338 | 341 / 667 / 2042 | 2.9% | 35 / 103 / 128 | 4 | 566 / 217 / 244 / 17 / 8 / 0 | 0 / 1,052 | 8.73 / 94% |
 | ultrafeedback_th_open (Thai) | 1,005 | 1,005 | 1.00 | 113 | 396,690 | 287 / 806 / 1883 | 5.4% | 27 / 89 / 67 | 4 | 532 / 211 / 172 / 71 / 17 / 2 | 0 / 1,005 | 8.82 / 96% |
 | **English** | 12,432 | 9,326 | 1.33 | 1,013 | 7,098,000 | 512 / 959 / 2048 | 8.0% | 161 / 143 / 136 | 5 | 3836 / 3826 / 3850 / 467 / 82 / 371 | 5,372 / 7,060 | 8.35 / 77% |
-| **Thai** | 4,351 | 3,639 | 1.20 | 512 | 1,804,920 | 363 / 687 / 2042 | 3.6% | 55 / 110 / 100 | 5 | 1604 / 1123 / 1261 / 231 / 63 / 69 | 1,133 / 3,218 | 8.65 / 93% |
-| **all** | 16,783 | 12,965 | 1.29 | 1,525 | 8,902,920 | 464 / 912 / 2048 | 6.9% | 135 / 134 / 124 | 5 | 5440 / 4949 / 5111 / 698 / 145 / 440 | 6,505 / 10,278 | 8.42 / 81% |
+| **Thai** | 5,954 | 4,229 | 1.41 | 622 | 2,492,692 | 382 / 644 / 2042 | 2.7% | 120 / 115 / 89 | 5 | 1609 / 1880 / 2105 / 266 / 63 / 31 | 2,736 / 3,218 | 8.54 / 91% |
+| **all** | 18,386 | 13,555 | 1.36 | 1,635 | 9,590,692 | 453 / 891 / 2048 | 6.3% | 144 / 133 / 115 | 5 | 5445 / 5706 / 5955 / 733 / 145 / 402 | 8,108 / 10,278 | 8.41 / 82% |
 
-English : Thai = 12,432 : 4,351 = 1 : 0.35 (target about 1 : 0.5).
+English : Thai = 12,432 : 5,954 = 1 : 0.48 (target about 1 : 0.5).
 
 ## Why select dropped prompts
 
@@ -31,7 +29,7 @@ English : Thai = 12,432 : 4,351 = 1 : 0.35 (target about 1 : 0.5).
 | ultrafeedback_closed (English) | 37 | 0 |
 | ultrafeedback_open (English) | 149 | 0 |
 | helpsteer2_th_open (Thai) | 110 | 0 |
-| logiqa_th_closed (Thai) | 7 | 72 |
+| logiqa_th_closed (Thai) | 23 | 166 |
 | no_robots_th_open (Thai) | 210 | 0 |
 | ultrafeedback_th_open (Thai) | 113 | 0 |
 
@@ -41,4 +39,4 @@ English : Thai = 12,432 : 4,351 = 1 : 0.35 (target about 1 : 0.5).
 |---|---:|---:|---:|
 | logiqa_closed (English) | 1,946 | 250 | 78% |
 | ultrafeedback_closed (English) | 458 | 0 | 65% |
-| logiqa_th_closed (Thai) | 421 | 72 | 84% |
+| logiqa_th_closed (Thai) | 1,011 | 166 | 84% |

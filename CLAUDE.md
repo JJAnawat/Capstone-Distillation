@@ -105,21 +105,15 @@ No Robots is CC BY-NC 4.0 and LogiQA 2.0 CC BY-NC-SA 4.0: derived data is non-co
 every row. Open TODOs (company hardware, Qwen terms) are in docs/LICENSES.md.
 
 ## Status (2026-11-08)
-- **Done:** the English full run (12,432 final rows), both translator comparisons and both checker comparisons
-  (Gemma stays translator and checker, no second gate).
-- **Thai: everything but LogiQA's judging is done** (docs/experiments.md §7, night 2 and its resume).
-  - The three open Thai sets have their final rows: 3,218 (No Robots 1,052, HelpSteer2 1,161, UltraFeedback 1,005).
-  - LogiQA: 515 of ~2,200 new samples judged; its final file is still night 1's (1,133 rows from 500 prompts).
-  - Interim totals in `reports/dataset_status.md` (16,783 rows, 8.9M student tokens); not pushed to the Hub since
-    2026-11-02.
-- **Next, in the user's next GPU window (~25 min): resume with the same command.** The teacher server still loads
-  (~8 min) to find nothing left, then ~1,700 LogiQA samples are judged (~10 min), then select, push and the report.
-  `tmux new -s thai 'REDO_LANGUAGE=1 LIMIT=0 LIMIT_CLOSED=1200 bash scripts/run_thai.sh 2>&1 | tee -ai logs/thai.log'`
-  - Untracked helpers on the VM: `logs/start_thai.sh` (timed start) and `logs/stopper_thai.sh` (timed Ctrl-C); set
-    their times first.
-  - Other users' GPU jobs come and go; one ran the teacher out of memory on 2026-11-08 (it restarted by itself).
-  - Expected: about 5.7–6.0k Thai rows in all. Then refresh the status:
-    `.venv/bin/python scripts/dataset_status.py > reports/dataset_status.md`.
+- **Stage 1 is done: 18,386 final rows, 9.59M student tokens** (`reports/dataset_status.md`; refresh it with
+  `.venv/bin/python scripts/dataset_status.py > reports/dataset_status.md` on the VM).
+  - English 12,432 rows (7.10M tokens); Thai 5,954 rows (2.49M), English : Thai = 1 : 0.48.
+  - Both translator comparisons and both checker comparisons are done (Gemma stays translator and checker).
+  - `data/full_th` and the ratings were pushed to the Hub on 2026-11-08.
+- **Untracked helpers on the VM:** `logs/start_thai.sh` (timed start), `logs/stopper_thai.sh` (timed Ctrl-C),
+  `logs/finish_logiqa.sh` (judge-only finish). Other users' GPU jobs come and go; one ran the teacher out of memory on
+  2026-11-08 (it restarted by itself).
+- **Next: the training stage** (a separate stage, not this repo's output).
 - **Open with the user (no GPU):** LogiQA answers often repeat the rationale; how a row maps onto the student's chat
   template (training stage); judge validation with thinking on; the closed-gold audit; the licensing TODOs; narrowing
   the VM token to the dataset repo and deleting the old `JuyJuy` token.

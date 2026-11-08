@@ -153,8 +153,18 @@ Variant B, `LIMIT=2500` per set, `LIMIT_CLOSED=500` for UltraFeedback's noisy cl
 | HelpSteer2 | 1,271 | 1,161 | 110 |
 | UltraFeedback | 1,118 | 1,005 | 113 |
 
-- **Left:** ~1,700 LogiQA samples to judge (~10 min), then select, push and the report: ~25 min of GPU with the
-  teacher's load. Interim totals in `reports/dataset_status.md`.
+- **The finish (2026-11-08, 17:23–17:35 UTC; a 30-min window):** an untracked `logs/finish_logiqa.sh` skipped the
+  teacher phase (nothing was left for it) and ran the pipeline's judge, select, push and report steps for LogiQA
+  only. Judged 1,689 samples at 180–206 tok/s, 0 failures.
+  - Thai LogiQA: 1,200 prompts, 1,011 kept (2,736 rows), 166 without a correct letter, 23 with best score < 7.
+
+### The Thai set, final (`reports/dataset_status.md`, `reports/full_th.md`)
+- **5,954 rows from 4,229 prompts, 2.49M student tokens** (English 12,432 rows, 7.10M): English : Thai = 1 : 0.48,
+  against the 1 : 0.5 target.
+- **Shorter than English:** median 382 student tokens (English 512); 2.7% over 1,024 (English 8.0%).
+- **Judge:** mean 8.54, 91% ≥ 8 (English 8.35, 77%; English LogiQA pulls that down at 7.56).
+- **Thai LogiQA's correct-letter rate 84%** (English 78%).
+- **Thai No Robots lost 17% of its prompts to the judge** (best score < 7; English 6%), the other Thai open sets 9–10%.
 
 ## 8. Second translator comparison, G2 (2026-11-01)
 - **Why:** the user found G1's pool too small to crown Gemma, and no dedicated translation model had been tried.
