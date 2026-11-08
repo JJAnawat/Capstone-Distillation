@@ -135,8 +135,26 @@ Variant B, `LIMIT=2500` per set, `LIMIT_CLOSED=500` for UltraFeedback's noisy cl
   `compress_v4` and the Thai-aware filter cut the language rejections about tenfold.
 - **Judge phase (from ~17:32):** No Robots fully judged (2,341 new samples). HelpSteer2 got 202 of 2,681 before the
   stopper's Ctrl-C at 17:50.
-- **Left for the next window (~45 min):** judging ~2,400 HelpSteer2, ~2,000 UltraFeedback and ~2,500 LogiQA samples,
-  then select, push and the report.
+- **Left for the next window:** judging the rest of HelpSteer2, UltraFeedback and LogiQA, then select, push and the
+  report.
+
+### Thai night 2, resume (2026-11-08, 16:00–16:55 UTC; window until 17:00)
+- **Same command,** launched at 16:00 by a timed starter in tmux; the stopper's Ctrl-C came at 16:55.
+- **Teacher phase (16:00–16:21):** a few retries only (21 ratings, 11 compressions). Another user's jobs started
+  after vLLM had sized its KV cache (11.4 GiB in use at launch, then a new 2 GB process): the teacher ran out of
+  memory at 16:06, and `with_server` restarted it at 16:11 (1 of 2).
+- **Judge phase (16:21–16:55), 140–190 tok/s:** HelpSteer2 (2,433 samples) and UltraFeedback (2,000, 1 failure)
+  fully judged; LogiQA 515 of 2,204.
+- **Select (on CPU after the stop)** for the three open sets:
+
+| set | prompts | rows | dropped: best score < 7 |
+|---|---:|---:|---:|
+| No Robots | 1,262 | 1,052 | 210 (17%; English 6%) |
+| HelpSteer2 | 1,271 | 1,161 | 110 |
+| UltraFeedback | 1,118 | 1,005 | 113 |
+
+- **Left:** ~1,700 LogiQA samples to judge (~10 min), then select, push and the report: ~25 min of GPU with the
+  teacher's load. Interim totals in `reports/dataset_status.md`.
 
 ## 8. Second translator comparison, G2 (2026-11-01)
 - **Why:** the user found G1's pool too small to crown Gemma, and no dedicated translation model had been tried.
